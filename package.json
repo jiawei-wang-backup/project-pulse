@@ -1,0 +1,19 @@
+{
+  "name": "project-pulse",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "项目进度与 AI 工作台本地交互原型",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test",
+    "test:integration": "node integration/smoke.mjs",
+    "sync:prs": "node db/sync-prs.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
+}

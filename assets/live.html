@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Project Pulse · 开发看板</title>
+<link rel="stylesheet" href="/assets/pulse.css">
+<script type="module" src="/src/live.js"></script>
+<header><div class="brand"><span class="mark">P</span>Project Pulse</div><button id="logout" hidden>退出</button></header>
+<main>
+  <div class="intro"><h1>开发看板</h1></div>
+  <form id="login"><label>看板访问令牌 <input type="password" id="access" required autocomplete="current-password"></label> <button>进入</button></form>
+  <p id="status" role="status"></p>
+  <div id="dashboard" hidden>
+    <div class="intro"><label>时间 <select id="days"><option value="1">最近 24 小时</option><option value="7" selected>最近 7 天</option><option value="30">最近 30 天</option></select></label>
+    <button id="refresh">刷新</button></div>
+    <div class="metrics" id="metrics"></div>
+    <section><h2>项目空间</h2><div id="projects"></div></section>
+    <section><h2>需要你关注</h2><div id="attention"></div></section>
+    <section><h2>团队成员</h2><div id="people"></div></section>
+    <section><h2>模型消耗</h2><div id="models"></div></section>
+    <section><h2>近期会话与总结</h2><div id="sessions"></div></section>
+    <section><h2>产出文档</h2><div id="pulls"></div></section>
+    <section id="quota-panel" hidden><h2>账号额度</h2><div id="quota"></div></section>
+  </div>
+</main>
+</html>
