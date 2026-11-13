@@ -11,7 +11,7 @@
 1. 创建空数据库。用数据库管理凭证执行 `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/001_init.sql`。
 2. 设置 `DATABASE_URL` 和独立的 `PULSE_VIEW_TOKEN`，运行 `npm start`。默认监听本机。团队部署时通过 HTTPS 反向代理暴露服务，数据库留在内网。看板以团队共享访问令牌登录，单设备采集凭证不能读取看板。
 3. 为每台设备执行 `node db/admin.mjs enroll "姓名"`。为同一人增加设备时执行 `node db/admin.mjs enroll "姓名" <developer_uuid>`。安全分发输出中的 device_token。设备离开团队时执行 `node db/admin.mjs revoke <device_uuid>`。
-4. 执行 `node db/admin.mjs repo owner/repo "业务分类"` 登记项目。私有仓库需在服务端配置拥有仓库及 PR 读取权限的 `PULSE_GITHUB_TOKEN`。用系统调度每 15 分钟运行 `npm run sync:prs`，也可手动触发。
+4. 执行 `node db/admin.mjs repo owner/repo "业务分类"` 登记项目。私有仓库需在服务端配置拥有仓库及 PR 读取权限的 `PULSE_GITHUB_TOKEN`。用系统调度每 30 分钟运行 `npm run sync:prs`，也可手动触发。
 
 ## 配置开发者设备
 
