@@ -136,8 +136,15 @@ export async function ingest(pool, token, raw) {
   } finally { client.release(); }
 }
 
+export function dashboardCutoff(days, now = Date.now()) {
+  // Shift UTC onto Singapore's calendar, then convert its midnight back to UTC.
+  const day = 86_400_000;
+  const offset = 8 * 3_600_000;
+  return new Date((Math.floor((now + offset) / day) - days + 1) * day - offset);
+}
+
 export async function dashboard(pool, days) {
-  const cutoff = new Date(Date.now() - days * 86400000);
+  const cutoff = dashboardCutoff(days);
   const queries = [
     [`SELECT d.display_name, t.last_seen_at, t.tool_id, t.full_name, t.last_activity_at
       FROM developers d LEFT JOIN LATERAL (

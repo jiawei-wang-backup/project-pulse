@@ -3,7 +3,7 @@ const form = byId('login'), status = byId('status'), view = byId('dashboard'), l
 let access = sessionStorage.getItem('pulse-access') || '';
 let request = 0;
 const stateLabel = {on_track:'正常推进',blocked:'已阻塞',unknown:'未知',completed:'已完成'};
-const date = value => value ? new Date(value).toLocaleString('zh-CN') : '—';
+const date = value => value ? new Date(value).toLocaleString('zh-CN', {timeZone:'Asia/Singapore'}) : '—';
 const count = value => value == null ? '—' : BigInt(value).toLocaleString('zh-CN');
 function el(tag, value, className) {
   const item = document.createElement(tag);
