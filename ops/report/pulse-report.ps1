@@ -143,7 +143,7 @@ foreach ($file in $files) {
         $counts = $cursor.context
         $usage = @()
         $activity = $null
-        $state = 'unknown'
+        $state = if ($cursor.agent_state) { $cursor.agent_state } else { 'unknown' }
         $notes = @()
         $main = StableId "codex:agent:$source"
         $lineStart = 0
@@ -215,9 +215,9 @@ foreach ($file in $files) {
             $sessions += $session
             $agents += @{agent_id=$main; session_id=$source; parent_agent_id=$null; kind='main'; role=$null;
                 state=$state; last_activity_at=$session.last_activity_at; revision=$end}
-            if (($session.repository -or $session.workspace_name) -and ($notes.Count -or !$cursor.project_report)) {
+            if ($notes.Count -or (($session.repository -or $session.workspace_name) -and !$cursor.project_report)) {
                 $evidence += @{source_id=$source; repository=$repo; workspace_name=$session.workspace_name;
-                    outcomes=$notes; previous_project_report=$cursor.project_report}
+                    outcomes=$notes; previous_summary=$cursor.latest_summary; previous_project_report=$cursor.project_report}
             }
         }
         $batches += @{schema_version=1; batch_id=[guid]::NewGuid().ToString(); sent_at=[DateTime]::UtcNow.ToString('o');

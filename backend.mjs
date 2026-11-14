@@ -298,13 +298,18 @@ export async function dashboard(pool, days) {
 async function reportCursor(pool, token, sourceId, lan = null) {
   if (!token && !lan) fail(401,'invalid_device');
   if (!uuid.test(sourceId ?? '')) fail(422,'invalid_source_id');
-  const result = await pool.query(`SELECT c.byte_offset,c.context,project.report,
+  const result = await pool.query(`SELECT c.byte_offset,c.context,project.report,summary.summary AS latest_summary,agent.state AS agent_state,
     ARRAY(SELECT full_name FROM repositories WHERE lower(github_host)='github.com' ORDER BY full_name) AS repositories
     FROM (SELECT 1) seed
     LEFT JOIN devices d ON d.credential_digest=$1
     LEFT JOIN report_cursors c ON c.device_id=d.device_id AND c.source_id=$2
     LEFT JOIN sessions s ON s.device_id=d.device_id AND s.session_id=$2
     LEFT JOIN repositories r USING (repository_id)
+    LEFT JOIN LATERAL (
+      SELECT summary FROM session_summaries x WHERE x.device_id=d.device_id AND x.session_id=$2
+      ORDER BY observed_at DESC,summary_id LIMIT 1
+    ) summary ON true
+    LEFT JOIN agents agent ON agent.device_id=d.device_id AND agent.session_id=$2 AND agent.kind='main'
     LEFT JOIN LATERAL (
       SELECT jsonb_build_object('goal',p.goal,'milestones',p.milestones,'observed_at',p.observed_at) AS report
       FROM project_reports p WHERE p.device_id=d.device_id
@@ -314,8 +319,8 @@ async function reportCursor(pool, token, sourceId, lan = null) {
     WHERE d.revoked_at IS NULL AND (d.device_id IS NOT NULL OR $3::boolean)`,
     [digest(lan?.credential ?? token),sourceId,Boolean(lan)]);
   if (!result.rowCount) fail(401,'invalid_device');
-  const {byte_offset,context,repositories,report} = result.rows[0];
-  return {source_id:sourceId,offset:Number(byte_offset ?? 0),context,repositories,project_report:report};
+  const {byte_offset,context,repositories,report,latest_summary,agent_state} = result.rows[0];
+  return {source_id:sourceId,offset:Number(byte_offset ?? 0),context,repositories,project_report:report,latest_summary,agent_state};
 }
 
 async function reportDirectory(pool, lan) {

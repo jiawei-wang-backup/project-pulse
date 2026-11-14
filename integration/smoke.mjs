@@ -117,8 +117,10 @@ try {
   const receipt={batch_id:valid.batch_id,status:'committed',to_offset:250};
   assert.deepEqual(await sendDirect(valid),receipt);
   assert.deepEqual(await sendDirect(valid),receipt);
-  const {project_report: previousProject,...position} = await readCursor();
+  const {project_report: previousProject,latest_summary,agent_state,...position} = await readCursor();
   assert.deepEqual(position,{source_id:sourceId,offset:250,context,repositories:['example/pulse']});
+  assert.equal(latest_summary,'验证了直报事件的事务写入');
+  assert.equal(agent_state,null);
   assert.equal(previousProject.goal,'采集并展示开发活动');
   assert.equal((await sendDirect({...direct,batch_id:randomUUID()})).error,'cursor_conflict');
   const backfill={...direct,batch_id:randomUUID(),cursor:{...direct.cursor,from_offset:250,to_offset:250},

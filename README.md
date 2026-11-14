@@ -15,7 +15,7 @@
 
 ## 配置开发者设备
 
-Windows 上可使用 [固定脚本和快速试报说明](ops/report/README.md) 处理 Codex 增量。可信局域网试点也可分发 [单文件上报说明书](docs/lan-report.md)。管理员运行 `./ops/local.sh serve-lan <本机私有 IPv4>`，分发前将说明书里的服务地址改为实际局域网地址。此入口免设备令牌，HTTP 明文传输，供同一可信局域网内试跑。
+macOS 和 Windows 可使用 [固定脚本和快速试报说明](ops/report/README.md) 处理 Codex 增量。可信局域网试点也可分发 [单文件上报说明书](docs/lan-report.md)。管理员运行 `./ops/local.sh serve-lan <本机私有 IPv4>`，分发前将说明书里的服务地址改为实际局域网地址。此入口免设备令牌，HTTP 明文传输，供同一可信局域网内试跑。
 
 复制整个 [Project Pulse 上报包](.agents/skills/project-pulse-report) 到另一台电脑，按 [试报说明](.agents/skills/project-pulse-report/SETUP.md) 配置。Codex 和 Claude Code 可以作为日志来源，也可以作为执行上报的工具。其他工具需有本机访问能力和已验证的日志格式映射。
 
