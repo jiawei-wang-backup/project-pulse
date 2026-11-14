@@ -8,11 +8,18 @@ import { networkInterfaces } from 'node:os';
 // 内网预览只暴露页面资源；项目配置、测试和其他磁盘文件不作为静态资源提供。
 const root = fileURLToPath(new URL('.', import.meta.url));
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
-export function createPreviewServer(api = null) {
+export function createPreviewServer(api = null, {reportOnly = false} = {}) {
   const server = http.createServer(async (request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+    if (reportOnly && !(
+      (request.method === 'GET' && ['/api/v1/report-cursor','/api/v1/report-directory'].includes(request.url.split('?')[0])) ||
+      (request.method === 'POST' && request.url === '/api/v1/reports')
+    )) {
+      response.writeHead(404).end();
+      return;
+    }
     if (request.url.startsWith('/api/')) {
       if (!api) { response.writeHead(404).end(); return; }
       return api.handle(request,response,new URL(request.url,'http://localhost'));
@@ -52,19 +59,19 @@ export function networkPreviewUrls(port, interfaces=networkInterfaces()) {
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const requestedPort = Number(process.argv[2] || process.env.PORT || 4174);
-  // 默认允许同网段设备访问；需要限制本机时可设置 PULSE_HOST=127.0.0.1。
   const bindHost = process.env.PULSE_HOST || '127.0.0.1';
   if (!Number.isInteger(requestedPort) || requestedPort < 1 || requestedPort > 65535) throw new Error('端口必须是 1 到 65535 的整数');
   const localView = process.env.PULSE_LOCAL_VIEW === '1';
   if (localView && bindHost !== '127.0.0.1') throw new Error('PULSE_LOCAL_VIEW requires PULSE_HOST=127.0.0.1');
-  const server = createPreviewServer(createApi({localView}));
+  const reportOnly = process.env.PULSE_REPORT_ONLY === '1';
+  const server = createPreviewServer(createApi({localView,lanEnrollment:reportOnly && process.env.PULSE_LAN_ENROLLMENT === '1'}), {reportOnly});
   let port = requestedPort;
   server.on('error', error => {
-    if (error.code === 'EADDRINUSE' && port < Math.min(requestedPort + 10, 65535)) server.listen(++port, bindHost);
+    if (!reportOnly && error.code === 'EADDRINUSE' && port < Math.min(requestedPort + 10, 65535)) server.listen(++port, bindHost);
     else { console.error(`预览服务启动失败：${error.code || 'UNKNOWN'}`); process.exitCode = 1; }
   });
   server.on('listening', () => {
-    console.log(`Project Pulse 本地预览：http://127.0.0.1:${port}/`);
+    console.log(`Project Pulse ${reportOnly ? '上报入口' : '预览'}：http://${bindHost}:${port}/`);
     if(bindHost==='0.0.0.0') for(const url of networkPreviewUrls(port)) console.log(`内网预览：${url}`);
   });
   server.listen(port, bindHost);

@@ -39,6 +39,13 @@ psql_local < db/006_report_cursors.sql >/dev/null
 psql_local < db/007_github_identities.sql >/dev/null
 case "${1:-serve}" in
   serve) PULSE_LOCAL_VIEW=1 PULSE_HOST=127.0.0.1 exec node server.mjs ;;
+  serve-lan)
+    lan_ip=${2:-}
+    if [[ ! "$lan_ip" =~ ^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)([0-9]{1,3}\.)?[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+      printf '%s\n' 'Usage: ops/local.sh serve-lan PRIVATE_IPV4' >&2
+      exit 2
+    fi
+    PULSE_REPORT_ONLY=1 PULSE_LAN_ENROLLMENT=1 PULSE_LOCAL_VIEW=0 PULSE_HOST="$lan_ip" exec node server.mjs ;;
   sync) exec node db/sync-prs.mjs ;;
   admin) shift; exec node db/admin.mjs "$@" ;;
   backup)
@@ -50,5 +57,5 @@ case "${1:-serve}" in
       rm -f "$backup"
       exit 1
     fi ;;
-  *) printf '%s\n' 'Usage: ops/local.sh serve|sync|admin|backup' >&2; exit 2 ;;
+  *) printf '%s\n' 'Usage: ops/local.sh serve|serve-lan|sync|admin|backup' >&2; exit 2 ;;
 esac

@@ -18,6 +18,9 @@ try {
       [device_id,developer_id,createHash('sha256').update(token).digest()]);
     await db.query('COMMIT');
     console.log(JSON.stringify({developer_id,device_id,device_token:token}));
+  } else if(action==='tool') {
+    if(!/^[a-z][a-z0-9_]{0,63}$/.test(value)) throw new Error('Use a lowercase tool ID.');
+    await db.query('INSERT INTO tools (tool_id) VALUES ($1) ON CONFLICT DO NOTHING',[value]);
   } else if(action==='revoke') {
     await db.query('UPDATE devices SET revoked_at=now() WHERE device_id=$1',[value]);
   } else if(action==='repo') {
@@ -29,7 +32,7 @@ try {
       ON CONFLICT(github_host,github_id) DO UPDATE SET full_name=EXCLUDED.full_name,business_category=EXCLUDED.business_category`,
       [randomUUID(),repo.id,repo.full_name,extra || null]);
     console.log(repo.full_name);
-  } else throw new Error('Use enroll NAME [developer_uuid], enroll-github USERNAME [developer_uuid], revoke DEVICE_UUID, or repo OWNER/REPO [category].');
+  } else throw new Error('Use enroll NAME [developer_uuid], enroll-github USERNAME [developer_uuid], tool TOOL_ID, revoke DEVICE_UUID, or repo OWNER/REPO [category].');
 } catch(error) {
   await db.query('ROLLBACK'); throw error;
 } finally { db.release(); await pool.end(); }

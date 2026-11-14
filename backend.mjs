@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import pg from 'pg';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const toolId = value => typeof value === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(value);
 const digest = value => createHash('sha256').update(value).digest();
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 const safeNarrative = (value,max) => typeof value==='string' && value.trim() && [...value].length<=max &&
@@ -46,7 +47,7 @@ function validate(report) {
   for (const row of report.projects || []) {
     keys(row,'report_id source_session_id project_key goal milestones observed_at summarizer_tool prompt_version');
     if (!uuid.test(row.report_id) || !uuid.test(row.source_session_id) || !timestamp(row.observed_at) ||
-        !['codex','claude_code'].includes(row.summarizer_tool) || !version(row.prompt_version) ||
+        !toolId(row.summarizer_tool) || !version(row.prompt_version) ||
         typeof row.project_key!=='string' || !/^(?:[\w.-]+\/[\w.-]+|[^\\/:\x00-\x1f\x7f]{1,120})$/.test(row.project_key) ||
         !safeNarrative(row.goal,200) ||
         !Array.isArray(row.milestones) || row.milestones.length<1 || row.milestones.length>12) fail(422,'invalid_project_report');
@@ -115,17 +116,41 @@ async function upsert(client, table, key, record, revisioned = false, fixed = []
   fail(409, 'record_conflict');
 }
 
-export async function ingest(pool, token, raw) {
-  if (!token) fail(401, 'invalid_device');
+function lanIdentity(deviceKey, labelHeader) {
+  if (typeof deviceKey !== 'string' || !/^[a-f0-9]{64}$/.test(deviceKey)) fail(401,'invalid_lan_device');
+  const hex = digest('project-pulse-lan:' + deviceKey).toString('hex');
+  const id = [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20,32)].join('-');
+  let label = '';
+  if (labelHeader !== undefined) {
+    try { label = decodeURIComponent(labelHeader).trim(); }
+    catch { fail(422,'invalid_lan_label'); }
+    if (!/^[\p{L}\p{M}\p{N} _.@()-]{1,80}$/u.test(label)) fail(422,'invalid_lan_label');
+  }
+  const placeholder = '局域网设备 ' + hex.slice(0,12);
+  return {id, credential: 'lan:' + deviceKey, placeholder, name: label ? label + ' · ' + hex.slice(0,12) : placeholder};
+}
+
+export async function ingest(pool, token, raw, lan = null) {
+  if (!token && !lan) fail(401, 'invalid_device');
   let report;
   try { report = JSON.parse(raw); } catch { fail(400, 'invalid_json'); }
   validate(report);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const auth = await client.query('SELECT device_id,developer_id FROM devices WHERE credential_digest=$1 AND revoked_at IS NULL FOR UPDATE', [digest(token)]);
+    if (lan) {
+      if (!report.cursor) fail(422,'cursor_required');
+      await client.query('INSERT INTO developers(developer_id,display_name) VALUES ($1,$2) ON CONFLICT DO NOTHING',[lan.id,lan.name]);
+      await client.query('INSERT INTO devices(device_id,developer_id,credential_digest) VALUES ($1,$1,$2) ON CONFLICT DO NOTHING',
+        [lan.id,digest(lan.credential)]);
+    }
+    const auth = await client.query('SELECT device_id,developer_id FROM devices WHERE credential_digest=$1 AND revoked_at IS NULL FOR UPDATE', [digest(lan?.credential ?? token)]);
     if (!auth.rowCount) fail(401, 'invalid_device');
     const device_id = auth.rows[0].device_id;
+    if (lan && lan.name !== lan.placeholder && auth.rows[0].developer_id === lan.id) {
+      await client.query('UPDATE developers SET display_name=$2 WHERE developer_id=$1 AND display_name=$3',
+        [lan.id,lan.name,lan.placeholder]);
+    }
     const { batch_id, schema_version, collector_version, sent_at, cursor } = report;
     const hash = digest(raw);
     const batch = await client.query('SELECT request_digest FROM ingest_batches WHERE device_id=$1 AND batch_id=$2', [device_id,batch_id]);
@@ -265,19 +290,42 @@ export async function dashboard(pool, days) {
     project_reports:projectReports.rows,project_usage:projectUsage.rows,session_usage:sessionUsage.rows,memberships:memberships.rows,workspace_states:workspaceStates.rows,today_models:todayModels.rows };
 }
 
-async function reportCursor(pool, token, sourceId) {
-  if (!token) fail(401,'invalid_device');
+async function reportCursor(pool, token, sourceId, lan = null) {
+  if (!token && !lan) fail(401,'invalid_device');
   if (!uuid.test(sourceId ?? '')) fail(422,'invalid_source_id');
   const result = await pool.query(`SELECT c.byte_offset,c.context,
     ARRAY(SELECT full_name FROM repositories WHERE lower(github_host)='github.com' ORDER BY full_name) AS repositories
-    FROM devices d LEFT JOIN report_cursors c ON c.device_id=d.device_id AND c.source_id=$2
-    WHERE d.credential_digest=$1 AND d.revoked_at IS NULL`, [digest(token),sourceId]);
+    FROM (SELECT 1) seed
+    LEFT JOIN devices d ON d.credential_digest=$1
+    LEFT JOIN report_cursors c ON c.device_id=d.device_id AND c.source_id=$2
+    WHERE d.revoked_at IS NULL AND (d.device_id IS NOT NULL OR $3::boolean)`,
+    [digest(lan?.credential ?? token),sourceId,Boolean(lan)]);
   if (!result.rowCount) fail(401,'invalid_device');
   const {byte_offset,context,repositories} = result.rows[0];
   return {source_id:sourceId,offset:Number(byte_offset ?? 0),context,repositories};
 }
 
-export function createApi({localView = false} = {}) {
+async function reportDirectory(pool, lan) {
+  const [members, repositories, current] = await Promise.all([
+    pool.query(`SELECT d.display_name,g.github_login,
+      ARRAY(SELECT DISTINCT r.full_name FROM devices v JOIN sessions s USING (device_id)
+        JOIN repositories r USING (repository_id)
+        WHERE v.developer_id=d.developer_id AND v.revoked_at IS NULL ORDER BY r.full_name) AS observed_projects
+      FROM developers d LEFT JOIN github_identities g USING (developer_id)
+      WHERE g.github_user_id IS NOT NULL OR EXISTS (
+        SELECT 1 FROM devices v WHERE v.developer_id=d.developer_id AND v.device_id<>d.developer_id AND v.revoked_at IS NULL
+      ) ORDER BY d.display_name,d.developer_id`),
+    pool.query(`SELECT full_name,'https://github.com/' || full_name AS url
+      FROM repositories WHERE lower(github_host)='github.com' ORDER BY full_name`),
+    pool.query(`SELECT v.revoked_at,d.display_name FROM devices v JOIN developers d USING (developer_id)
+      WHERE v.credential_digest=$1`,[digest(lan.credential)])
+  ]);
+  if (current.rows[0]?.revoked_at) fail(401,'invalid_device');
+  return {members:members.rows,repositories:repositories.rows,
+    current_display_name:current.rows[0]?.display_name ?? null};
+}
+
+export function createApi({localView = false, lanEnrollment = false} = {}) {
   if (!process.env.DATABASE_URL) return null;
   if (!localView && !process.env.PULSE_VIEW_TOKEN) throw new Error('PULSE_VIEW_TOKEN is required with DATABASE_URL');
   const pool = new pg.Pool({connectionString:process.env.DATABASE_URL,max:5,connectionTimeoutMillis:3000,statement_timeout:5000});
@@ -288,6 +336,8 @@ export function createApi({localView = false} = {}) {
       const token = /^Bearer (.+)$/.exec(req.headers.authorization || '')?.[1];
       let data;
       try {
+        const deviceKey = req.headers['x-pulse-lan-device'];
+        const lan = lanEnrollment && !req.headers.authorization && deviceKey !== undefined ? lanIdentity(deviceKey,req.headers['x-pulse-lan-label']) : null;
         if (req.method==='POST' && url.pathname==='/api/v1/reports') {
           if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) fail(415,'invalid_content_type');
           const chunks = [];
@@ -297,10 +347,13 @@ export function createApi({localView = false} = {}) {
             if (length > 256 * 1024) { res.writeHead(413).end(); return; }
             chunks.push(chunk);
           }
-          data = await ingest(pool,token,Buffer.concat(chunks));
+          data = await ingest(pool,token,Buffer.concat(chunks),lan);
+        } else if (req.method==='GET' && url.pathname==='/api/v1/report-directory' && lanEnrollment) {
+          if (!lan) fail(401,'invalid_lan_device');
+          data = await reportDirectory(pool,lan);
         } else if (req.method==='GET' && url.pathname==='/api/v1/report-cursor') {
           res.setHeader('Cache-Control','no-store');
-          data = await reportCursor(pool,token,url.searchParams.get('source_id'));
+          data = await reportCursor(pool,token,url.searchParams.get('source_id'),lan);
         } else if (req.method==='GET' && url.pathname==='/api/v1/dashboard') {
           if (localView) {
             const host = req.headers.host || '';

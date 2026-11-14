@@ -15,12 +15,17 @@
 
 ## 配置开发者设备
 
+可信局域网试点可分发 [单文件上报说明书](docs/lan-report.md)。管理员运行 `./ops/local.sh serve-lan <本机私有 IPv4>`，分发前将说明书里的服务地址改为实际局域网地址。此入口免设备令牌，HTTP 明文传输，供同一可信局域网内试跑。
+
+复制整个 [Project Pulse 上报包](.agents/skills/project-pulse-report) 到另一台电脑，按 [试报说明](.agents/skills/project-pulse-report/SETUP.md) 配置。Codex 和 Claude Code 可以作为日志来源，也可以作为执行上报的工具。其他工具需有本机访问能力和已验证的日志格式映射。
+
 macOS 和 Windows 客户端都使用已有的 Codex 和系统命令。由看板管理员发放设备令牌。用文本编辑器在当前用户目录下创建 `.project-pulse/config.json`，文件名以 `.json` 结尾。
 
 ```json
 {
   "server_url": "http://127.0.0.1:4185",
-  "device_token": "替换成管理员发放的设备令牌"
+  "device_token": "替换成管理员发放的设备令牌",
+  "sources": ["codex"]
 }
 ```
 
@@ -40,7 +45,7 @@ Codex 从 PostgreSQL 读取上次提交的位置，用 curl 发送结构化报�
 - `npm test` 运行原型及领域测试。
 - 在临时空库执行迁移后，设置该库的 `DATABASE_URL` 并执行 `npm run test:integration`。测试会写入合成数据，请用可丢弃的数据库。
 - Codex 直报限制每轮日志数量和读取字节数。真实开发机的开销与长时间断网恢复仍需试点实测。
-- 旧版客户端的 Codex 和 Claude Code 适配使用合成会话做了端到端验证。当前直报提示词只读取 Codex 日志。Codex 子 Agent 采集范围见本机试点章节。GitHub 同步首轮读取每个仓库最新的 100 条 PR，之后按更新增量同步。
+- 旧版客户端的 Codex 和 Claude Code 适配使用合成会话做了端到端验证。上报包提供 Codex 和 Claude Code 日志适配。Claude Code 直报尚未在真实设备上验证。Codex 子 Agent 采集范围见本机试点章节。GitHub 同步首轮读取每个仓库最新的 100 条 PR，之后按更新增量同步。
 - PostgreSQL 模式的根地址使用正式工作台样式展示真实数据，包含项目目标、里程碑、人员、模型、会话摘要和按项目分组的 PR。尚无项目报告时仍显示里程碑空状态。未配置数据库时，根地址仍展示演示原型。旧版简化看板保留在 `/assets/live.html`，便于排查接口数据。
 
 [技术方案和协议](技术方案.md) · [数据库迁移](db/001_init.sql)
