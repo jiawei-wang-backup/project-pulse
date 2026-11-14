@@ -118,7 +118,21 @@ function pulls(items) {
 }
 function modelRows() {
   if (!data.models.length) return empty('暂无模型消耗');
-  return `<div class="live-table-wrap"><table class="live-table"><thead><tr><th>提供商 / 模型</th><th>输入 Token</th><th>缓存输入</th><th>输出 Token</th></tr></thead><tbody>${data.models.map(row=>`<tr><td><strong>${esc(row.model || '未知模型')}</strong><small>${esc(row.provider)}</small></td><td>${count(row.input_tokens)}</td><td>${count(row.cached_input_tokens)}</td><td>${count(row.output_tokens)}</td></tr>`).join('')}</tbody></table></div>`;
+  const rows = data.models.map(row => `<tr>
+    <th scope="row"><div class="live-model-identity">
+      <span class="live-model-mark">${icon('token')}</span>
+      <span><strong>${esc(row.model || '未知模型')}</strong><small>${esc(row.provider || '未知提供商')}</small></span>
+    </div></th>
+    <td>${count(row.input_tokens)}</td>
+    <td>${count(row.cached_input_tokens)}</td>
+    <td>${count(row.output_tokens)}</td>
+  </tr>`).join('');
+  return `<div class="live-table-wrap live-model-wrap">
+    <table class="live-table live-model-table">
+      <thead><tr><th scope="col">模型 / 提供商</th><th scope="col">输入 Token</th><th scope="col">缓存输入</th><th scope="col">输出 Token</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
 }
 function peopleRows(items=data.people) {
   if (!items.length) return empty('暂无成员');
@@ -205,11 +219,17 @@ function distributionPanel() {
   return `<div class="live-distribution">${rows.map(row=>`<div class="live-distribution-row"><div><strong>${esc(row.model||'未知模型')}</strong><span>${count(row.total)} Token</span></div><div class="progress-track"><span style="--progress:${total?Number(row.total*100n/total):0}%"></span></div></div>`).join('')}</div>`;
 }
 function attentionPanel(projects) {
-  return section(`${icon('warning')}需要你关注`,projects.length?`<div class="live-attention">${projects.map(item=>`<a href="#/projects/${encodeURIComponent(item.full_name)}"><span class="status-badge tone-${tone[item.status]||'muted'}">${status[item.status]||'待确认'}</span><strong>${esc(projectName(item.full_name))}</strong>${icon('chevron')}</a>`).join('')}</div>`:empty('暂无阻塞或待确认的项目'));
-}
-function quotaPanel() {
-  if (!data.quota.length) return section(`${icon('bolt')}账号额度`,empty('暂无额度快照'));
-  return section(`${icon('bolt')}账号额度`,`<div class="live-table-wrap"><table class="live-table"><thead><tr><th>姓名</th><th>提供商</th><th>额度窗口</th><th>已用</th><th>重置时间</th></tr></thead><tbody>${data.quota.map(row=>`<tr><td>${esc(row.display_name)}</td><td>${esc(row.provider)}</td><td>${esc(row.limit_id)} / ${esc(row.window_key)}</td><td>${row.used_percent==null?'—':esc(row.used_percent)+'%'}</td><td>${date(row.resets_at)}</td></tr>`).join('')}</tbody></table></div>`);
+  const rows = projects.map(item => {
+    const blocked = item.status === 'blocked';
+    return `<a class="live-attention-item ${blocked ? 'is-blocked' : ''}" href="#/projects/${encodeURIComponent(item.full_name)}">
+      <span class="live-attention-mark">${icon(blocked ? 'warning' : 'folder')}</span>
+      <strong>${esc(projectName(item.full_name))}</strong>
+      <span class="status-badge tone-${tone[item.status] || 'muted'}">${status[item.status] || '待确认'}</span>
+      ${icon('chevron', 'live-attention-arrow')}
+    </a>`;
+  });
+  const body = rows.length ? `<div class="live-attention">${rows.join('')}</div>` : empty('暂无需要关注的项目');
+  return section(`${icon('warning')}需要你关注`, body, `<span class="section-count" aria-label="${rows.length} 个项目">${rows.length}</span>`);
 }
 function overview() {
   const usage=data.models.reduce((sum,row)=>sum+BigInt(row.input_tokens||0)+BigInt(row.output_tokens||0),0n);
@@ -221,7 +241,7 @@ function overview() {
     ${attentionPanel(attention)}
     <div class="live-columns">${section(`${icon('bot')}AI 工作现场`,agentCards(runningAgents()))}${section(`${icon('document')}产出文档`,pulls(data.pulls.slice(0,5)),`<a href="#/outputs" class="live-more">全部文档 ${icon('arrow')}</a>`)}</div>
     ${analytics()}${allocationPanel()}${activityPanel()}
-    ${section(`${icon('chart')}模型消耗`,modelRows())}${quotaPanel()}`;
+    ${section(`${icon('chart')}模型消耗`,modelRows())}`;
 }
 function projectPage(key) {
   const project=allProjects().find(row=>row.full_name===key);

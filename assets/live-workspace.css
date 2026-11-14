@@ -101,11 +101,14 @@
 .live-distribution-row>div:first-child{display:flex;justify-content:space-between;gap:10px;margin-bottom:8px;font-size:10px}
 .live-distribution-row strong{font-weight:500;overflow-wrap:anywhere}
 .live-distribution-row span{color:var(--muted);white-space:nowrap}
-.live-attention>a{display:flex;align-items:center;gap:12px;padding:12px 19px;border-bottom:1px solid var(--border)}
-.live-attention>a:last-child{border-bottom:0}
-.live-attention>a:hover{background:#ffffff05}
-.live-attention>a strong{flex:1;font-size:11px;font-weight:500}
-.live-attention>a>.icon{width:14px;height:14px;color:var(--muted)}
+.live-attention:has(.live-attention-item){display:grid;gap:8px;padding:12px 16px 16px}
+.live-attention-item{display:grid;grid-template-columns:32px minmax(0,1fr) auto 14px;gap:12px;align-items:center;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--inset)}
+.live-attention-item:hover,.live-attention-item:focus-visible{background:var(--panel-hover);border-color:#69734c}
+.live-attention-mark{display:grid;place-items:center;height:32px;border-radius:6px;background:#e3b66d12;color:var(--amber)}
+.live-attention-item.is-blocked .live-attention-mark{background:#ee8a8b12;color:var(--red)}
+.live-attention-mark .icon,.live-attention-arrow{width:15px;height:15px}
+.live-attention-item strong{font-size:12px;font-weight:600;overflow-wrap:anywhere}
+.live-attention-arrow{color:var(--muted)}
 .live-page-tabs{display:flex;gap:2px;overflow-x:auto;border-bottom:1px solid var(--border);margin-bottom:22px}
 .live-page-tabs button{background:transparent;color:var(--subtle);padding:10px 15px;white-space:nowrap;border-bottom:2px solid transparent}
 .live-page-tabs button:hover,.live-page-tabs button:focus-visible{color:var(--lime);border-bottom-color:var(--lime)}
@@ -165,3 +168,23 @@
 @media(max-width:1050px){.live-columns{grid-template-columns:1fr}.live-overview-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:1023px){.live-menu{display:inline-grid}.live-nav-backdrop{position:fixed;inset:0;background:#0009;z-index:35}.live-nav-open .live-nav-backdrop{display:block}.live-nav-open .sidebar{transform:translateX(0)}.sidebar{transform:translateX(-100%);transition:transform .2s}.content-shell{margin-left:0}}
 @media(max-width:700px){main{padding:22px 16px 0}.topbar{padding:0 16px}.snapshot-badge{display:none}.page-heading{align-items:flex-start;flex-direction:column}.metric-grid,.live-project-metrics,.live-overview-metrics,.live-team-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.project-grid,.live-agent-grid,.live-team-grid{grid-template-columns:1fr}.analytics-grid{grid-template-columns:1fr}.allocation-grid{grid-template-columns:1fr 1fr}.live-activity-panel{overflow-x:auto}.live-activity-panel .activity-header,.live-activity-panel .activity-row{min-width:620px}.live-session-meta time{margin-left:0;width:100%}.live-session-group-latest{display:none}.live-session-group .live-session{padding-left:19px}.live-doc-row{flex-wrap:wrap}.live-doc-row time{margin-left:28px}.live-doc-heading{align-items:flex-start;flex-direction:column;gap:2px}}
+
+.live-model-wrap{margin:12px 16px 16px;border:1px solid var(--border);border-radius:8px;background:var(--inset)}
+.live-model-table thead{background:#ffffff05}
+.live-model-table thead th{font-size:11px}
+.live-model-table tbody th{font-size:12px}
+.live-model-table tbody tr:hover{background:#ffffff05}
+.live-model-table tbody tr:last-child th{border-bottom:0}
+.live-model-table th:not(:first-child),.live-model-table td{text-align:right;font-variant-numeric:tabular-nums}
+.live-model-table td{color:var(--text);font-size:12px;font-weight:500}
+.live-model-table td:nth-child(3){color:var(--subtle)}
+.live-model-table td:last-child{color:var(--lime)}
+.live-model-identity{display:flex;align-items:center;gap:10px}
+.live-model-identity strong{color:var(--text);font-weight:600}
+.live-model-identity small{display:block;margin-top:2px;color:var(--muted);font-size:10px}
+.live-model-mark{display:grid;place-items:center;width:30px;height:30px;flex-shrink:0;border-radius:7px;background:#c9e76a12;color:var(--lime)}
+.live-model-mark .icon{width:15px;height:15px}
+@media(max-width:700px){
+  .live-model-wrap{margin-inline:10px}
+  .live-model-table th,.live-model-table td{padding-inline:10px}
+}
