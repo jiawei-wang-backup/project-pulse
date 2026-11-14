@@ -354,7 +354,9 @@ function submit(data) {
       const next=JSON.parse(state.sessions.get(row.session_id).value);
       if(next.last_activity_at===row.observed_at) {
         next.revision++;
-        next.project_observation={state:row.state,reason_code:row.reason_code,observed_at:row.observed_at};
+        if (row.state !== 'unknown' || !next.project_observation) {
+          next.project_observation={state:row.state,reason_code:row.reason_code,observed_at:row.observed_at};
+        }
         state.sessions.set(row.session_id,{id:row.session_id,value:json(next)});
         const {state: agentState,evidence:signals,...session}=next;
         sessions.push(session);

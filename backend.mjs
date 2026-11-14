@@ -11,15 +11,29 @@ function validate(report) {
   const arrays = ['sessions', 'agents', 'summaries', 'usage'];
   const hasQuota = report && Object.hasOwn(report,'quota');
   const hasProjects = report && Object.hasOwn(report,'projects');
+  const hasCursor = report && Object.hasOwn(report,'cursor');
   if (hasQuota) arrays.push('quota');
   if (hasProjects) arrays.push('projects');
   const keys = (row, fields) => {
     if (!row || typeof row !== 'object' || Object.keys(row).sort().join(' ') !== fields.split(' ').sort().join(' ')) fail(422, 'invalid_fields');
   };
-  keys(report, 'schema_version batch_id sent_at collector_version sessions agents summaries usage' + (hasQuota ? ' quota' : '') + (hasProjects ? ' projects' : ''));
+  keys(report, 'schema_version batch_id sent_at collector_version sessions agents summaries usage' + (hasQuota ? ' quota' : '') + (hasProjects ? ' projects' : '') + (hasCursor ? ' cursor' : ''));
   if (report.schema_version !== 1 || !uuid.test(report.batch_id) ||
       arrays.some(key => !Array.isArray(report[key])) ||
       arrays.reduce((sum, key) => sum + report[key].length, 0) > 100) fail(422, 'invalid_batch');
+  if (hasCursor) {
+    const {cursor} = report;
+    keys(cursor,'source_id from_offset to_offset context');
+    if (!uuid.test(cursor.source_id) || !Number.isSafeInteger(cursor.from_offset) ||
+        !Number.isSafeInteger(cursor.to_offset) || cursor.from_offset < 0 ||
+        cursor.to_offset <= cursor.from_offset) fail(422,'invalid_cursor');
+    keys(cursor.context,'model input_tokens cached_input_tokens output_tokens');
+    const {model,...counts} = cursor.context;
+    if ((model !== null && (typeof model !== 'string' || !/^[\w./:-]{1,100}$/.test(model))) ||
+        Object.values(counts).some(value => value !== null && (!Number.isSafeInteger(value) || value < 0))) {
+      fail(422,'invalid_cursor_context');
+    }
+  }
   const fields = {
     sessions: 'session_id tool revision repository started_at last_activity_at project_observation',
     agents: 'agent_id session_id parent_agent_id kind role state last_activity_at revision',
@@ -57,6 +71,7 @@ function validate(report) {
           !row.workspace_name.trim() || [...row.workspace_name].length > 120 ||
           /[\\/:\x00-\x1f\x7f]/.test(row.workspace_name) ||
           ['.','..'].includes(row.workspace_name))) fail(422,'invalid_workspace_name');
+      if (hasCursor && group === 'summaries' && !safeNarrative(row.summary,200)) fail(422,'invalid_summary');
       if (row.title !== undefined && (typeof row.title !== 'string' || !row.title.trim() || [...row.title].length > 120)) fail(422, 'invalid_title');
       for (const [key, value] of Object.entries(row)) {
         if (value === null && ['repository','started_at','project_observation','parent_agent_id','role','provider','model','input_tokens','cached_input_tokens','output_tokens'].includes(key)) continue;
@@ -111,19 +126,29 @@ export async function ingest(pool, token, raw) {
     const auth = await client.query('SELECT device_id,developer_id FROM devices WHERE credential_digest=$1 AND revoked_at IS NULL FOR UPDATE', [digest(token)]);
     if (!auth.rowCount) fail(401, 'invalid_device');
     const device_id = auth.rows[0].device_id;
-    const { batch_id, schema_version, collector_version, sent_at } = report;
+    const { batch_id, schema_version, collector_version, sent_at, cursor } = report;
     const hash = digest(raw);
     const batch = await client.query('SELECT request_digest FROM ingest_batches WHERE device_id=$1 AND batch_id=$2', [device_id,batch_id]);
     if (batch.rowCount) {
       if (!hash.equals(batch.rows[0].request_digest)) fail(409, 'batch_conflict');
     } else {
+      if (cursor) {
+        const previous = await client.query('SELECT byte_offset FROM report_cursors WHERE device_id=$1 AND source_id=$2',
+          [device_id,cursor.source_id]);
+        if (BigInt(previous.rows[0]?.byte_offset ?? 0) !== BigInt(cursor.from_offset)) fail(409,'cursor_conflict');
+        await client.query(`INSERT INTO report_cursors(device_id,source_id,byte_offset,context) VALUES ($1,$2,$3,$4)
+          ON CONFLICT(device_id,source_id) DO UPDATE SET byte_offset=EXCLUDED.byte_offset,context=EXCLUDED.context`,
+          [device_id,cursor.source_id,cursor.to_offset,cursor.context]);
+      }
       await client.query('INSERT INTO ingest_batches (device_id,batch_id,request_digest,schema_version,collector_version,sent_at) VALUES ($1,$2,$3,$4,$5,$6)', [device_id,batch_id,hash,schema_version,collector_version,sent_at]);
       for (const {tool,repository,project_observation,...session} of report.sessions) {
         const repo = repository ? await client.query("SELECT repository_id FROM repositories WHERE lower(github_host)='github.com' AND lower(full_name)=lower($1)",[repository]) : null;
         await upsert(client,'sessions',['device_id','session_id'],{
           device_id,...session,tool_id:tool,repository_id:repo?.rows[0]?.repository_id ?? null,
-          project_state:project_observation?.state ?? null,reason_code:project_observation?.reason_code ?? null,
-          observed_at:project_observation?.observed_at ?? null
+          ...(cursor && project_observation === null ? {} : {
+            project_state:project_observation?.state ?? null,reason_code:project_observation?.reason_code ?? null,
+            observed_at:project_observation?.observed_at ?? null
+          })
         },true,['tool_id']);
       }
       for (const row of report.agents) await upsert(client,'agents',['device_id','agent_id'],{device_id,...row},true,['session_id','parent_agent_id','kind']);
@@ -151,7 +176,7 @@ export async function ingest(pool, token, raw) {
     }
     await client.query('UPDATE devices SET last_seen_at=now() WHERE device_id=$1',[device_id]);
     await client.query('COMMIT');
-    return { batch_id, status:'committed' };
+    return { batch_id, status:'committed', ...(cursor ? {to_offset:cursor.to_offset} : {}) };
   } catch (error) {
     await client.query('ROLLBACK');
     if (['23503','23514','22P02','22001','22008'].includes(error.code)) fail(422,'invalid_record');
@@ -178,11 +203,10 @@ export async function dashboard(pool, days) {
       ) t ON true ORDER BY d.display_name`,[]],
     [`SELECT r.repository_id,r.full_name,r.business_category,
       CASE WHEN r.completed_at IS NOT NULL THEN 'completed'
-           WHEN o.observed_at < now()-interval '60 minutes' THEN 'unknown'
            ELSE coalesce(o.project_state,'unknown') END AS status,
       coalesce((SELECT json_agg(json_build_object('title',m.title,'state',m.state,'due_on',m.due_on) ORDER BY m.position) FROM project_milestones m WHERE m.repository_id=r.repository_id),'[]') AS milestones
       FROM repositories r LEFT JOIN LATERAL (
-        SELECT project_state,observed_at FROM sessions WHERE repository_id=r.repository_id AND observed_at IS NOT NULL ORDER BY observed_at DESC,session_id LIMIT 1
+        SELECT project_state,observed_at FROM sessions WHERE repository_id=r.repository_id AND observed_at IS NOT NULL AND project_state IN ('blocked','on_track') ORDER BY observed_at DESC,session_id LIMIT 1
       ) o ON true ORDER BY r.full_name`,[]],
     [`SELECT u.provider,u.model,sum(u.input_tokens) AS input_tokens,sum(u.cached_input_tokens) AS cached_input_tokens,
       sum(u.output_tokens) AS output_tokens FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1
@@ -227,10 +251,30 @@ export async function dashboard(pool, days) {
       WHERE s.last_activity_at >= $1
       GROUP BY d.display_name,r.full_name,s.workspace_name ORDER BY d.display_name,last_activity_at DESC`,[cutoff]]
   ];
-  const [people,projects,models,sessions,agents,running,pulls,quota,agentDetails,usageDays,projectReports,projectUsage,sessionUsage,memberships] = await Promise.all(queries.map(args=>pool.query(...args)));
+  queries.push([`SELECT DISTINCT ON (workspace_name) workspace_name,project_state AS status
+    FROM sessions WHERE repository_id IS NULL AND workspace_name IS NOT NULL
+      AND observed_at IS NOT NULL AND project_state IN ('blocked','on_track')
+    ORDER BY workspace_name,observed_at DESC,session_id`,[]]);
+  queries.push([`SELECT provider, model, sum(input_tokens) AS input_tokens,
+    sum(cached_input_tokens) AS cached_input_tokens, sum(output_tokens) AS output_tokens
+    FROM usage_events WHERE accounting='billable' AND occurred_at >= $1 AND occurred_at <= now()
+    GROUP BY provider, model`, [dashboardCutoff(1)]]);
+  const [people,projects,models,sessions,agents,running,pulls,quota,agentDetails,usageDays,projectReports,projectUsage,sessionUsage,memberships,workspaceStates,todayModels] = await Promise.all(queries.map(args=>pool.query(...args)));
   return { people:people.rows,projects:projects.rows,models:models.rows,sessions:sessions.rows,agents:agents.rows,
     running:running.rows[0].count,pulls:pulls.rows,quota:quota.rows,agent_details:agentDetails.rows,usage_days:usageDays.rows,
-    project_reports:projectReports.rows,project_usage:projectUsage.rows,session_usage:sessionUsage.rows,memberships:memberships.rows };
+    project_reports:projectReports.rows,project_usage:projectUsage.rows,session_usage:sessionUsage.rows,memberships:memberships.rows,workspace_states:workspaceStates.rows,today_models:todayModels.rows };
+}
+
+async function reportCursor(pool, token, sourceId) {
+  if (!token) fail(401,'invalid_device');
+  if (!uuid.test(sourceId ?? '')) fail(422,'invalid_source_id');
+  const result = await pool.query(`SELECT c.byte_offset,c.context,
+    ARRAY(SELECT full_name FROM repositories WHERE lower(github_host)='github.com' ORDER BY full_name) AS repositories
+    FROM devices d LEFT JOIN report_cursors c ON c.device_id=d.device_id AND c.source_id=$2
+    WHERE d.credential_digest=$1 AND d.revoked_at IS NULL`, [digest(token),sourceId]);
+  if (!result.rowCount) fail(401,'invalid_device');
+  const {byte_offset,context,repositories} = result.rows[0];
+  return {source_id:sourceId,offset:Number(byte_offset ?? 0),context,repositories};
 }
 
 export function createApi({localView = false} = {}) {
@@ -254,6 +298,9 @@ export function createApi({localView = false} = {}) {
             chunks.push(chunk);
           }
           data = await ingest(pool,token,Buffer.concat(chunks));
+        } else if (req.method==='GET' && url.pathname==='/api/v1/report-cursor') {
+          res.setHeader('Cache-Control','no-store');
+          data = await reportCursor(pool,token,url.searchParams.get('source_id'));
         } else if (req.method==='GET' && url.pathname==='/api/v1/dashboard') {
           if (localView) {
             const host = req.headers.host || '';

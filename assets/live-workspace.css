@@ -81,7 +81,7 @@
 .allocation-grid .allocation-item .progress-track span{background:var(--accent)}
 .live-columns{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:16px}
 .live-columns .panel{min-width:0}
-.live-overview-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
+.live-overview-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}
 .live-agent-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:14px}
 .live-agent-card{border:1px solid var(--border);border-radius:9px;background:var(--inset);padding:14px;min-width:0}
 .live-agent-top{display:flex;gap:10px;align-items:center}
@@ -188,3 +188,25 @@
   .live-model-wrap{margin-inline:10px}
   .live-model-table th,.live-model-table td{padding-inline:10px}
 }
+
+.live-member-table thead{background:#ffffff05}
+.live-member-table tbody tr:hover{background:#ffffff04}
+.live-member-table tbody tr:last-child th{border-bottom:0}
+.live-member-table td:nth-child(3){width:45%;white-space:normal}
+.live-member-table :is(th,td):nth-last-child(-n+2){text-align:right;font-variant-numeric:tabular-nums}
+.live-member-identity{display:flex;align-items:center;gap:10px;color:var(--text);font-size:12px}
+.live-member-identity:hover{color:var(--lime)}
+.live-member-mark{display:grid;place-items:center;width:30px;height:30px;flex-shrink:0;border-radius:7px;background:#c9e76a12;color:var(--lime)}
+.live-member-mark .icon{width:15px;height:15px}
+.live-member-tool,.live-member-projects a{display:inline-block;padding:3px 7px;border:1px solid var(--border);border-radius:5px;background:#ffffff04}
+.live-member-tool{font-size:10px;color:var(--subtle)}
+.live-member-projects{display:flex;flex-wrap:wrap;gap:5px}
+.live-member-projects a{overflow-wrap:anywhere}
+.live-member-projects a:hover,.live-member-projects a:focus-visible{color:var(--lime);border-color:#69734c}
+@media(max-width:700px){
+  .live-member-table{min-width:560px}
+  .live-member-table th,.live-member-table td{padding-inline:10px}
+}
+
+.allocation-grid a.allocation-item{display:block;border-radius:4px}
+.allocation-grid a.allocation-item:focus-visible{outline:2px solid var(--lime);outline-offset:5px}
