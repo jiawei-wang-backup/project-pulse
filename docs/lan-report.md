@@ -6,7 +6,7 @@
 
 两个请求均带 `X-Pulse-LAN-Device: <64 位小写 SHA-256 十六进制>`。在 shell 内以机器 ID 与当前 OS 用户标识组成固定字符串，UTF-8 无 BOM 哈希，原值留在本机。macOS 用 IOPlatformUUID 和 `id -u`，Windows 用注册表 `HKLM:\SOFTWARE\Microsoft\Cryptography` 的 MachineGuid 和当前 Windows 用户 SID，Linux 用 `/etc/machine-id` 和 `id -u`。任一值拿不到就报错结束。不要用 IP、随机数或会话 ID 替代，也不要在聊天里输出设备标识。
 
-用 `curl -q -sS --connect-timeout 3 --max-time 10`（Windows 明确用 `curl.exe`），禁用跳转。每轮最多读 8 个有增量的文件，合计 1 MiB，限制在近期 7 天的日志。排除本上报任务和首条用户请求含 PROJECT_PULSE_AUTOMATION 的会话。只在 shell 内解析原始日志，将脱敏证据交给模型。临时正文用私有目录或文件权限，结束后清理。无变化立即退出。只有实际成果、验证结果或阻塞变化时才更新摘要，否则省略摘要行。
+用 `curl -q -sS --connect-timeout 3 --max-time 10`（Windows 明确用 `curl.exe`），禁用跳转。每轮最多读 8 个有增量的文件，合计 1 MiB，限制在近期 7 天的日志。排除本上报任务和首条用户请求含 PROJECT_PULSE_AUTOMATION 的会话。只在 shell 内解析原始日志，将脱敏证据交给模型。临时正文用私有目录或文件权限，结束后清理。无变化且没有缺失的项目报告时立即退出。只有实际成果、验证结果或阻塞变化时才更新摘要，否则省略摘要行。
 
 ## 识别上报者
 
@@ -37,6 +37,14 @@
 3. 按行顺序从返回的 context 恢复最近模型和 Token 累计值。遇到 `turn_context.payload.model` 更新模型。使用 `event_msg` 下的 `token_count`，优先用两个可比较的 `info.total_token_usage` 快照做差。首次或累计值回退时更新基线，若有可信且与该事件对应的 `info.last_token_usage` 可作该事件的增量。累计快照完全相同时跳过该计量事件。未获得增量的字段用 null，没有任何已知增量或增量都为 0 时省略事件。子线程累计值只更新上下文，避免重复计算父线程历史。缓存输入是输入的子集，使用日志的 UTC 时间。将处理结束时的累计值和模型写回 cursor.context。
 4. 主会话状态优先用最近明确事件（`task_started → running`、`task_complete → completed`、`turn_aborted → idle`）。已有历史状态可从该文件游标前不超过 64 KiB 的尾部查找；缺失证据填 unknown。子 Agent 归到根会话，并引用直接父 Agent。根 Agent 已存在时仅提交该子 Agent。用 `session_meta.git.repository_url` 或已授权工作目录的 `git config --get remote.origin.url` 确认 GitHub `owner/repo`（去掉协议和 .git，统一小写）；登记仓库白名单可用 GET 游标响应中的 `repositories`。有证据的同一仓库使用同一个仓库名，识别不出时填 null，可附工作区目录名。不要按相似名称合并项目。
 
+## 每个项目都要上报目标和里程碑
+
+- 首次识别出项目，或者游标接口返回 `project_report: null`，必须在 `projects` 中补一份项目报告，即使只有一条会话。识别出新成果、目标变化、完成验证或实际阻塞时更新已有报告。已有报告且没有实质变化时可以省略。每轮每个项目最多一份。
+- `project_key` 用登记仓库列表中的原样 `owner/repo`（匹配时忽略大小写）；仓库未登记时，用与会话 `workspace_name` 完全相同的名称，例如 `watchops`。“整理文件”等工作区也适用。用同一设备该项目的一条已上报或同批上报的会话作为 `source_session_id`。无可关联的会话时先查找已授权的项目日志。
+- 从本批脱敏会话证据判断项目目标。一并核对已经存在的报告，可在授权项目目录内限量读取 README、计划和近期 Git 记录。目标写一句话。里程碑列出 1–12 个具体交付项，每项包含 `title`、`state`、`evidence`。有实现和验证依据时填 `completed`，待验证或仍在计划中的项填 `pending` 并写清还差什么。证据不足时，给出一条贴合项目的待核实项并注明缺少的证据。禁止编造完成项、百分比或日期。
+- 已上报过会话但缺里程碑时，从现有会话末尾至多读取 64 KiB 的相关历史作为补报证据。使用主会话 UUID 请求游标。若偏移大于零，提交 `from_offset = to_offset = 当前偏移`，原样带回 `context`，仅填 `projects`，其余必填数组为空。用新的 batch_id，`report_id` 按 `<来源>:project-backfill:<source_id>:<offset>:<项目键>` 派生。observed_at 用本次实际观察的 UTC 时间。同一报告重发保持原请求正文。此操作不改变游标或用量。遇到游标冲突先重查；已存在报告且无更新时结束。
+- 输出项目名、提交结果和里程碑数量。无法补报时说明缺哪项证据或缺哪个已上报的会话。
+
 ## 构造并提交 JSON
 
 每批只推进一个文件的游标，最多 100 条记录、256 KiB JSON。无可上报记录但有完整行已处理时，可以用空数组提交游标。即使跨多次运行，同一个源记录也使用同一个 ID。
@@ -44,9 +52,9 @@
 - `batch_id` 由对应平台的命令产生。其他派生 UUID 对固定键做 SHA-256，取前 32 位小写十六进制，格式化为 8-4-4-4-12。固定键为 `codex:agent:<线程UUID>`、`codex:usage:<源UUID>:<事件行起始字节>`、`codex:summary:<源UUID>:<批次结束字节>`、`codex:project:<源UUID>:<批次结束字节>:<项目键>`。
 - `revision` 使用对应文件的 `to_offset`。有会话活动时才上报会话快照；last_activity_at 用最后一个活动事件的时间，summary.observed_at 与它一致。时间统一为以 Z 结尾的 ISO 时间。
 - 摘要写实际做了什么，先写行动、发现，再写有证据的验证结果或阻塞。只有启动、完成信号或用量变化时省略摘要。只有影响当前任务、仍无法解决且无替代路径时才标 blocked。确认推进填 on_track。证据不足时省略状态观察，以免覆盖此前的有效判断。
-- 项目报告用证据明确的仓库名或工作区名，与会话的归属一致。每个项目每轮最多一份。用简短目标和 1–12 条有明确依据的里程碑描述完成与未完成。草稿 PR、计划或请求只能作为未完成的依据。摘要、目标与依据最多 200 字，标题最多 120 字。
+- 项目报告用证据明确的仓库名或工作区名，与会话的归属一致。摘要、目标与依据最多 200 字，标题最多 120 字。
 
-字段清单（大括号为对象；可省略字段有标明）：
+字段清单（大括号为对象；可省略字段有标明）。每轮检查会话名称及项目归属、工具与 Agent 状态、实际工作摘要、日志中的模型与可核实 Token、项目目标和里程碑。GitHub PR 由服务端同步。
 
 ```text
 schema_version: 1
@@ -60,7 +68,7 @@ agents: [{agent_id, session_id, parent_agent_id, kind:"main"或"subagent", role:
 summaries: [{summary_id, session_id, observed_at, summary, summarizer_tool:实际执行摘要的工具ID, prompt_version:"2.0.0"}]
 usage: [{event_id, session_id, agent_id, occurred_at, provider:"openai", model, accounting:"billable",
          input_tokens, cached_input_tokens, output_tokens}]
-projects(可省略): [{report_id, source_session_id, project_key, goal, milestones:[{title,state,evidence}],
+projects(首次或进展变化时必填): [{report_id, source_session_id, project_key, goal, milestones:[{title,state,evidence}],
                      observed_at, summarizer_tool:实际执行摘要的工具ID, prompt_version:"2.0.0"}]
 ```
 

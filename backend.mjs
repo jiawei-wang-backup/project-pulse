@@ -27,7 +27,12 @@ function validate(report) {
     keys(cursor,'source_id from_offset to_offset context');
     if (!uuid.test(cursor.source_id) || !Number.isSafeInteger(cursor.from_offset) ||
         !Number.isSafeInteger(cursor.to_offset) || cursor.from_offset < 0 ||
-        cursor.to_offset <= cursor.from_offset) fail(422,'invalid_cursor');
+        cursor.to_offset < cursor.from_offset) fail(422,'invalid_cursor');
+    if (cursor.to_offset === cursor.from_offset && (
+      cursor.from_offset === 0 || !report.projects?.length ||
+      arrays.some(key => key !== 'projects' && report[key].length) ||
+      report.projects.some(row => row?.source_session_id !== cursor.source_id)
+    )) fail(422,'invalid_project_backfill');
     keys(cursor.context,'model input_tokens cached_input_tokens output_tokens');
     const {model,...counts} = cursor.context;
     if ((model !== null && (typeof model !== 'string' || !/^[\w./:-]{1,100}$/.test(model))) ||
@@ -161,7 +166,7 @@ export async function ingest(pool, token, raw, lan = null) {
         const previous = await client.query('SELECT byte_offset FROM report_cursors WHERE device_id=$1 AND source_id=$2',
           [device_id,cursor.source_id]);
         if (BigInt(previous.rows[0]?.byte_offset ?? 0) !== BigInt(cursor.from_offset)) fail(409,'cursor_conflict');
-        await client.query(`INSERT INTO report_cursors(device_id,source_id,byte_offset,context) VALUES ($1,$2,$3,$4)
+        if (cursor.to_offset > cursor.from_offset) await client.query(`INSERT INTO report_cursors(device_id,source_id,byte_offset,context) VALUES ($1,$2,$3,$4)
           ON CONFLICT(device_id,source_id) DO UPDATE SET byte_offset=EXCLUDED.byte_offset,context=EXCLUDED.context`,
           [device_id,cursor.source_id,cursor.to_offset,cursor.context]);
       }
@@ -293,16 +298,24 @@ export async function dashboard(pool, days) {
 async function reportCursor(pool, token, sourceId, lan = null) {
   if (!token && !lan) fail(401,'invalid_device');
   if (!uuid.test(sourceId ?? '')) fail(422,'invalid_source_id');
-  const result = await pool.query(`SELECT c.byte_offset,c.context,
+  const result = await pool.query(`SELECT c.byte_offset,c.context,project.report,
     ARRAY(SELECT full_name FROM repositories WHERE lower(github_host)='github.com' ORDER BY full_name) AS repositories
     FROM (SELECT 1) seed
     LEFT JOIN devices d ON d.credential_digest=$1
     LEFT JOIN report_cursors c ON c.device_id=d.device_id AND c.source_id=$2
+    LEFT JOIN sessions s ON s.device_id=d.device_id AND s.session_id=$2
+    LEFT JOIN repositories r USING (repository_id)
+    LEFT JOIN LATERAL (
+      SELECT jsonb_build_object('goal',p.goal,'milestones',p.milestones,'observed_at',p.observed_at) AS report
+      FROM project_reports p WHERE p.device_id=d.device_id
+        AND p.project_key=coalesce(r.full_name,s.workspace_name)
+      ORDER BY p.observed_at DESC,p.report_id DESC LIMIT 1
+    ) project ON true
     WHERE d.revoked_at IS NULL AND (d.device_id IS NOT NULL OR $3::boolean)`,
     [digest(lan?.credential ?? token),sourceId,Boolean(lan)]);
   if (!result.rowCount) fail(401,'invalid_device');
-  const {byte_offset,context,repositories} = result.rows[0];
-  return {source_id:sourceId,offset:Number(byte_offset ?? 0),context,repositories};
+  const {byte_offset,context,repositories,report} = result.rows[0];
+  return {source_id:sourceId,offset:Number(byte_offset ?? 0),context,repositories,project_report:report};
 }
 
 async function reportDirectory(pool, lan) {

@@ -117,8 +117,18 @@ try {
   const receipt={batch_id:valid.batch_id,status:'committed',to_offset:250};
   assert.deepEqual(await sendDirect(valid),receipt);
   assert.deepEqual(await sendDirect(valid),receipt);
-  assert.deepEqual(await readCursor(),{source_id:sourceId,offset:250,context,repositories:['example/pulse']});
+  const {project_report: previousProject,...position} = await readCursor();
+  assert.deepEqual(position,{source_id:sourceId,offset:250,context,repositories:['example/pulse']});
+  assert.equal(previousProject.goal,'采集并展示开发活动');
   assert.equal((await sendDirect({...direct,batch_id:randomUUID()})).error,'cursor_conflict');
+  const backfill={...direct,batch_id:randomUUID(),cursor:{...direct.cursor,from_offset:250,to_offset:250},
+    projects:[{report_id:randomUUID(),source_session_id:sourceId,project_key:'example/pulse',
+      goal:'补齐项目目标',milestones:[{title:'测试上报',state:'completed',evidence:'已通过集成测试'}],
+      observed_at:new Date(Date.parse(at)+1000).toISOString(),summarizer_tool:'codex',prompt_version:'2.0.0'}]};
+  assert.equal((await sendDirect({...backfill,usage:valid.usage})).error,'invalid_project_backfill');
+  assert.equal((await sendDirect(backfill)).to_offset,250);
+  assert.equal((await sendDirect(backfill)).status,'committed');
+  assert.equal((await readCursor()).project_report.goal,'补齐项目目标');
   const next={...direct,batch_id:randomUUID(),cursor:{...direct.cursor,from_offset:250,to_offset:300},
     sessions:[{...valid.sessions[0],revision:300,project_observation:null}]};
   assert.equal((await sendDirect(next)).to_offset,300);
