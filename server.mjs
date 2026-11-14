@@ -55,7 +55,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   // 默认允许同网段设备访问；需要限制本机时可设置 PULSE_HOST=127.0.0.1。
   const bindHost = process.env.PULSE_HOST || '127.0.0.1';
   if (!Number.isInteger(requestedPort) || requestedPort < 1 || requestedPort > 65535) throw new Error('端口必须是 1 到 65535 的整数');
-  const server = createPreviewServer(createApi());
+  const localView = process.env.PULSE_LOCAL_VIEW === '1';
+  if (localView && bindHost !== '127.0.0.1') throw new Error('PULSE_LOCAL_VIEW requires PULSE_HOST=127.0.0.1');
+  const server = createPreviewServer(createApi({localView}));
   let port = requestedPort;
   server.on('error', error => {
     if (error.code === 'EADDRINUSE' && port < Math.min(requestedPort + 10, 65535)) server.listen(++port, bindHost);

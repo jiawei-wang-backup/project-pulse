@@ -46,6 +46,11 @@ try {
     {type:'assistant',sessionId:'session-a',timestamp:at,message:{id:'message-1',model:'claude-fixture',stop_reason:'end_turn',
       usage:{input_tokens:4,cache_read_input_tokens:2,cache_creation_input_tokens:1,output_tokens:5}}}
   ].map(item=>JSON.stringify(item)).join('\n')+'\n');
+  await writeFile(join(root,'child.jsonl'),[
+    {type:'session_meta',timestamp:at,payload:{id:'child-a',parent_thread_id:'session-a',source:{subagent:{}}}},
+    {type:'event_msg',timestamp:at,payload:{type:'task_complete'}},
+    {type:'event_msg',timestamp:at,payload:{type:'token_count',info:{total_token_usage:{input_tokens:10,output_tokens:3}}}}
+  ].map(item=>JSON.stringify(item)).join('\n')+'\n');
   const window=await cli('prepare');
   assert.equal(window.evidence.length,2);
   assert.notEqual(window.evidence[0].session_id,window.evidence[1].session_id);
@@ -53,11 +58,14 @@ try {
     session_id:row.session_id,observed_at:row.observed_at,summary:'已观测到开发活动',state:'unknown',reason_code:'insufficient_evidence'
   }))});
   assert.equal(submitted.sent_batches,2);
-  assert.equal((await cli('flush')).sent_batches,2);
+  let pending=submitted.pending_batches;
+  for(let i=0;i<5 && pending;i++) pending=(await cli('flush')).pending_batches;
+  assert.equal(pending,0);
   assert.equal((await cli('prepare')).evidence.length,0);
   assert.equal((await fetch(base+'/api/v1/dashboard')).status,401);
   const data=await (await fetch(base+'/api/v1/dashboard',{headers:{Authorization:'Bearer '+process.env.PULSE_VIEW_TOKEN}})).json();
   assert.equal(data.sessions.length,2);
+  assert.equal(data.agents.find(row=>row.kind==='subagent').count,1);
   assert.equal(data.quota[0].used_percent,'23');
   assert.ok(data.sessions.every(row=>row.summarizer_tool==='claude_code'));
   assert.equal(data.models.find(row=>row.model==='codex-fixture').input_tokens,'10');

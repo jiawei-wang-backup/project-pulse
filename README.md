@@ -8,7 +8,7 @@
 
 ## 启用 PostgreSQL
 
-1. 创建空数据库。用数据库管理凭证执行 `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/001_init.sql`。
+1. 创建空数据库。用数据库管理凭证执行 `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/001_init.sql -f db/002_session_title.sql -f db/003_session_display_title.sql -f db/004_session_workspace.sql`。
 2. 设置 `DATABASE_URL` 和独立的 `PULSE_VIEW_TOKEN`，运行 `npm start`。默认监听本机。团队部署时通过 HTTPS 反向代理暴露服务，数据库留在内网。看板以团队共享访问令牌登录，单设备采集凭证不能读取看板。
 3. 为每台设备执行 `node db/admin.mjs enroll "姓名"`。为同一人增加设备时执行 `node db/admin.mjs enroll "姓名" <developer_uuid>`。安全分发输出中的 device_token。设备离开团队时执行 `node db/admin.mjs revoke <device_uuid>`。
 4. 执行 `node db/admin.mjs repo owner/repo "业务分类"` 登记项目。私有仓库需在服务端配置拥有仓库及 PR 读取权限的 `PULSE_GITHUB_TOKEN`。用系统调度每 30 分钟运行 `npm run sync:prs`，也可手动触发。
@@ -26,6 +26,8 @@
 | PULSE_CLAUDE_DIR | 已授权的 Claude Code JSONL 项目目录，例如 `~/.claude/projects` 的绝对路径。 |
 | PULSE_SUMMARIZER_TOOL | `codex` 或 `claude_code`。决定总结来源。可与会话来源不同。 |
 | PULSE_CODEX_ACCOUNT_ID | 可选。为已确认使用单一 Codex 账号的设备配置账号 UUID。同一个人的同一账号跨设备复用 UUID，换号时停用或重新配置。 |
+| PULSE_SHARE_SESSION_TITLES | 可选。设为 `1` 时，从 Codex 会话索引读取并上报侧栏标题。标题可能含项目内容，只在允许共享标题时启用。 |
+| PULSE_SUMMARY_CONTEXT | 可选。设为 `1` 时将少量任务描述和完成说明交给选定的总结工具。这些摘录可能包含项目内容，且所选工具可能将输入发给其模型服务。采集器上报生成的摘要。 |
 | PULSE_STATE_DIR | 可选。SQLite 游标和队列位置，默认 `~/.project-pulse`。 |
 
 在所选开发工具配置每 **30 分钟**运行的本机任务，工作目录指向项目安装目录，使用 [上报提示词](prompts/report.md)。也可由系统调度启动已经配置好的本机工具。任务依次执行 `prepare`、生成总结、通过标准输入调用 `submit`。网络中断会保留待发队列。可用 `node client/pulse.mjs flush` 手动补传。
@@ -35,7 +37,16 @@
 - `npm test` 运行原型及领域测试。
 - 在临时空库执行迁移后，设置该库的 `DATABASE_URL` 并执行 `npm run test:integration`。测试会写入合成数据，请用可丢弃的数据库。
 - 采集器对输入文件大小、行数、网络请求和每轮批次设限。真实开发机的开销还需试点实测。摘要使用有限的结构化事件信号，缺少证据时状态为未知。
-- Codex 和 Claude Code 的基本适配使用合成会话做了端到端验证。Codex 额度可按上述账号 UUID 启用。子 Agent 保留了数据结构和看板查询，当前适配器仅上报主 Agent。GitHub 同步首轮读取每个仓库最新的 100 条 PR，之后按更新增量同步。
+- Codex 和 Claude Code 的基本适配使用合成会话做了端到端验证。Codex 额度可按上述账号 UUID 启用。Codex 子 Agent 采集范围见本机试点章节。GitHub 同步首轮读取每个仓库最新的 100 条 PR，之后按更新增量同步。
 - PostgreSQL 模式使用独立的真实数据看板，包含项目、人员、模型、会话摘要和按项目分组的 PR。演示界面的完整任务详情及文档预览可在演示模式查看。
 
 [技术方案和协议](技术方案.md) · [数据库迁移](db/001_init.sql)
+
+## 本机试点
+
+安装依赖后执行 `./ops/local.sh serve`，访问 http://127.0.0.1:4185。通过这个脚本启动的看板在本机直接打开即可。PostgreSQL 数据保存在 Docker 命名卷中，数据库端口仅绑定回环地址。
+
+- `./ops/local.sh admin enroll "姓名"` 创建设备凭证。
+- `./ops/local.sh sync` 执行一次 PR 同步。部署时可将 `ops/local-sync.sh` 每 30 分钟加入本机调度，并收集 stderr。私有仓库同步需要在任务环境加载 GitHub 读取凭证。
+- `./ops/local.sh backup` 生成 PostgreSQL 自定义格式备份。恢复演练时先创建空库，再用 `pg_restore --exit-on-error --dbname <空库连接串> <备份文件>` 恢复，核对设备、会话和 PR 记录。
+- Codex 子 Agent 在日志提供父线程 ID 且本机能解析父链时归到根会话。子线程累计 Token 暂不进入汇总，因为日志可能包含继承的历史计数。Claude Code 子 Agent 暂未接入。

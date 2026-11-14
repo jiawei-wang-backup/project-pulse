@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { open, readdir, stat, mkdir } from 'node:fs/promises';
+import { open, readdir, stat, mkdir, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
@@ -27,6 +27,7 @@ db.exec(`PRAGMA busy_timeout=1000;
   CREATE TABLE IF NOT EXISTS repo_cache (cwd TEXT PRIMARY KEY, name TEXT, checked_at INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, identity TEXT NOT NULL, offset INTEGER NOT NULL, context TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS child_agents (id TEXT PRIMARY KEY,value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS counts (id TEXT PRIMARY KEY,value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY);
   CREATE TABLE IF NOT EXISTS windows (id TEXT PRIMARY KEY, evidence TEXT NOT NULL);
@@ -77,17 +78,28 @@ async function repository(cwd) {
   return name;
 }
 
+const includeSummaryContext = process.env.PULSE_SUMMARY_CONTEXT === '1';
+
+function excerpt(role, value) {
+  if (!includeSummaryContext || typeof value !== 'string') return null;
+  const text = value.replace(/```[\s\S]*?(?:```|$)/g, '[代码省略]')
+    .replace(/https?:\/\/\S+|(?:^|\s)(?:~\/|\/|[A-Za-z]:\\)\S+/g, ' [链接或路径省略]')
+    .replace(/\s+/g, ' ').trim();
+  return text ? {role, text: [...text].slice(0, 240).join('')} : null;
+}
+
 function codex(row, context) {
   const p=row.payload || {};
   if (row.type==='session_meta' && typeof p.id==='string') {
-    return {context:{...context,native:p.id,repo:repoName(p.git?.repository_url),cwd:p.cwd,started:stamp(p.timestamp||row.timestamp)}};
+    return {context:{...context,native:p.id,parent:p.parent_thread_id || p.source?.subagent?.thread_spawn?.parent_thread_id,child:!!p.source?.subagent,repo:repoName(p.git?.repository_url),cwd:p.cwd,started:stamp(p.timestamp||row.timestamp)}};
   }
   if (row.type==='turn_context') return {context:{...context,model:safeModel(p.model)}};
   if (row.type!=='event_msg') return {};
   const at=stamp(row.timestamp);
   if(!at) return {};
   if (p.type==='task_started') return {at,state:'running',evidence:'task_started'};
-  if (p.type==='task_complete') return {at,state:'completed',evidence:'task_completed'};
+  if (p.type==='user_message') return {at,excerpt:excerpt('request',p.message)};
+  if (p.type==='task_complete') return {at,state:'completed',evidence:'task_completed',excerpt:excerpt('outcome',p.last_agent_message)};
   if (p.type==='exec_command_end') {
     const code=token(p.exit_code);
     return code===null ? {} : {at,evidence:code===0 ? 'command_succeeded' : 'command_failed'};
@@ -115,11 +127,50 @@ function claude(row, context) {
   const input=t && [token(t.input_tokens),token(t.cache_read_input_tokens ?? 0),token(t.cache_creation_input_tokens ?? 0)];
   return {context:next,at,state:m.stop_reason ? 'idle' : 'running',
     evidence:m.stop_reason ? 'assistant_turn_completed' : null,
+    excerpt:m.stop_reason ? excerpt('outcome',Array.isArray(m.content) ? m.content.filter(part=>part.type==='text').map(part=>part.text).join(' ') : m.content) : null,
     model:safeModel(m.model),key:m.id,counts:input && typeof m.id==='string' ?
       [input.every(x=>x!==null) ? token(input.reduce((a,b)=>a+b,0)) : null,input[1],token(t.output_tokens)] : null};
 }
 
+async function refreshCodexTitles() {
+  const directory = process.env.PULSE_CODEX_DIR;
+  if (!directory || process.env.PULSE_SHARE_SESSION_TITLES !== '1') return new Map();
+  const index = join(dirname(directory), 'session_index.jsonl');
+  const info = await stat(index).catch(() => null);
+  if (!info?.isFile() || info.size > 4 * 1024 * 1024) return new Map();
+
+  const titles = new Map();
+  for (const line of (await readFile(index, 'utf8')).split('\n')) {
+    let entry;
+    try { entry = JSON.parse(line); } catch { continue; }
+    if (typeof entry?.id !== 'string' || typeof entry.thread_name !== 'string') continue;
+    const title = [...entry.thread_name.replace(/[\x00-\x1f\x7f]/g, ' ').trim()].slice(0, 120).join('');
+    if (title) titles.set(id('codex', entry.id), title);
+  }
+
+  transaction(() => {
+    const select = db.prepare('SELECT value FROM sessions WHERE id=?');
+    const update = db.prepare('UPDATE sessions SET value=? WHERE id=?');
+    const changed = [];
+    for (const [sessionId, title] of titles) {
+      const stored = select.get(sessionId);
+      if (!stored) continue;
+      const next = JSON.parse(stored.value);
+      if (next.title === title) continue;
+      next.title = title;
+      next.revision++;
+      update.run(json(next), sessionId);
+      const {state, evidence, ...session} = next;
+      changed.push(session);
+      if (changed.length === 100) break;
+    }
+    if (changed.length) queue({sessions:changed});
+  });
+  return titles;
+}
+
 async function prepare() {
+  const titles = await refreshCodexTitles();
   const existing=db.prepare('SELECT * FROM windows ORDER BY rowid LIMIT 1').get();
   if(existing) return {window_id:existing.id,evidence:JSON.parse(existing.evidence)};
   const pending=db.prepare('SELECT coalesce(sum(length(body)),0) AS bytes FROM outbox').get().bytes;
@@ -164,7 +215,9 @@ async function prepare() {
       const fallbackRepo=context.repo || await repository(context.cwd);
       transaction(()=>{
         const changes=new Map();
+        const excerpts=new Map();
         const usage=[];
+        const childAgents=new Map();
         const quota=new Map();
         for(let start=0;start<bytes && events<2000 && Date.now()<deadline;) {
           const end=buffer.indexOf(10,start);
@@ -179,6 +232,27 @@ async function prepare() {
           context=parsed.context || context;
           if(!context.native || !parsed.at) continue;
           const session_id=id(tool,context.native);
+          if(tool==='codex' && (context.child || context.parent)) {
+            if(typeof context.parent!=='string') continue;
+            const parentThread=id(tool,context.parent);
+            const parentSession=db.prepare('SELECT 1 FROM sessions WHERE id=?').get(parentThread);
+            const parentChild=db.prepare('SELECT value FROM child_agents WHERE id=?').get(parentThread);
+            if(!parentSession && !parentChild) {
+              offset-=line.length+1;
+              break;
+            }
+            const parent=parentChild ? JSON.parse(parentChild.value) : null;
+            const agent_id=id(session_id,'subagent');
+            const previous=childAgents.get(agent_id) || JSON.parse(db.prepare('SELECT value FROM child_agents WHERE id=?').get(session_id)?.value || 'null');
+            if(previous && parsed.at<previous.last_activity_at) continue;
+            const agent={agent_id,session_id:parent?.session_id || parentThread,
+              parent_agent_id:parent?.agent_id || id(parentThread,'main'),kind:'subagent',role:null,
+              state:parsed.state || previous?.state || 'unknown',last_activity_at:parsed.at,revision:(previous?.revision || 0)+1};
+            childAgents.set(agent_id,agent);
+            db.prepare('INSERT OR REPLACE INTO child_agents VALUES (?,?)').run(session_id,json(agent));
+            // Child rollouts can inherit parent history and cumulative counters.
+            continue;
+          }
           if (!changes.has(session_id) && evidence.length+changes.size>=10) {
             offset-=line.length+1;
             break;
@@ -186,7 +260,10 @@ async function prepare() {
           const stored=db.prepare('SELECT value FROM sessions WHERE id=?').get(session_id);
           const old=changes.get(session_id) || (stored && JSON.parse(stored.value));
           const latest=!old || parsed.at>=old.last_activity_at;
-          const next={session_id,tool,revision:(old?.revision || 0)+1,
+          const title = titles.get(session_id) || old?.title;
+          const folder = typeof context.cwd === 'string' ? context.cwd.split(/[\\/]/).filter(Boolean).at(-1) : null;
+          const workspace_name = folder && !/[/:\x00-\x1f\x7f]/.test(folder) && !['.','..'].includes(folder) ? [...folder.trim()].slice(0,120).join('') : old?.workspace_name;
+          const next={session_id,tool,...(workspace_name ? {workspace_name} : {}),...(title ? {title} : {}),revision:(old?.revision || 0)+1,
             repository:allowed.has(context.repo || fallbackRepo) ? (context.repo || fallbackRepo) : null,
             started_at:[old?.started_at,context.started,parsed.at].filter(Boolean).sort()[0],
             last_activity_at:latest ? parsed.at : old.last_activity_at,
@@ -194,6 +271,10 @@ async function prepare() {
             state:latest && parsed.state ? parsed.state : old?.state ?? 'unknown',
             evidence:parsed.evidence ? [...(old?.evidence || []),parsed.evidence].slice(-8) : old?.evidence || []};
           changes.set(session_id,next);
+          if (parsed.excerpt) {
+            const list = excerpts.get(session_id) || [];
+            excerpts.set(session_id,[...list,parsed.excerpt].slice(-2));
+          }
           if(quotaAccount && parsed.limits) {
             const limit_id=parsed.limits.limit_id || 'codex';
             if(/^[a-z0-9_:-]{1,80}$/i.test(limit_id)) {
@@ -229,9 +310,12 @@ async function prepare() {
           sessions.push(session);
           agents.push({agent_id:id(session.session_id,'main'),session_id:session.session_id,parent_agent_id:null,
             kind:'main',role:null,state,last_activity_at:session.last_activity_at,revision:session.revision});
-          const item={session_id:session.session_id,tool,repository:session.repository,observed_at:session.last_activity_at,signals};
+          const item={session_id:session.session_id,tool,repository:session.repository,observed_at:session.last_activity_at,signals,activity:excerpts.get(session.session_id) || []};
           const index=evidence.findIndex(entry=>entry.session_id===session.session_id);
-          if(index>=0) evidence[index]=item;
+          if(index>=0) {
+            item.activity=[...(evidence[index].activity || []),...item.activity].slice(-2);
+            evidence[index]=item;
+          }
           else evidence.push(item);
         }
         if(sessions.length) {
@@ -239,6 +323,8 @@ async function prepare() {
           queue({sessions,agents,usage:firstUsage});
         }
         for(let index=0;index<usage.length;index+=100) queue({usage:usage.slice(index,index+100)});
+        const children=[...childAgents.values()];
+        for(let i=0;i<children.length;i+=100) queue({agents:children.slice(i,i+100)});
         const snapshots=[...quota.values()];
         for(let i=0;i<snapshots.length;i+=100) queue({quota:snapshots.slice(i,i+100)});
         if(changes.size) {

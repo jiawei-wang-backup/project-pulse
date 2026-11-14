@@ -35,7 +35,12 @@ function validate(report) {
   }
   for (const [group, fieldList] of Object.entries(fields)) {
     for (const row of report[group]) {
-      keys(row, fieldList);
+      keys(row, fieldList + (group === 'sessions' ? ['title','workspace_name'].filter(key => Object.hasOwn(row || {},key)).map(key => ' '+key).join('') : ''));
+      if (row.workspace_name !== undefined && (typeof row.workspace_name !== 'string' ||
+          !row.workspace_name.trim() || [...row.workspace_name].length > 120 ||
+          /[\\/:\x00-\x1f\x7f]/.test(row.workspace_name) ||
+          ['.','..'].includes(row.workspace_name))) fail(422,'invalid_workspace_name');
+      if (row.title !== undefined && (typeof row.title !== 'string' || !row.title.trim() || [...row.title].length > 120)) fail(422, 'invalid_title');
       for (const [key, value] of Object.entries(row)) {
         if (value === null && ['repository','started_at','project_observation','parent_agent_id','role','provider','model','input_tokens','cached_input_tokens','output_tokens'].includes(key)) continue;
         if (key === 'agent_id' && group === 'usage' && value === null) continue;
@@ -136,12 +141,19 @@ export async function ingest(pool, token, raw) {
   } finally { client.release(); }
 }
 
+export function dashboardCutoff(days, now = Date.now()) {
+  // Shift UTC onto Singapore's calendar, then convert its midnight back to UTC.
+  const day = 86_400_000;
+  const offset = 8 * 3_600_000;
+  return new Date((Math.floor((now + offset) / day) - days + 1) * day - offset);
+}
+
 export async function dashboard(pool, days) {
-  const cutoff = new Date(Date.now() - days * 86400000);
+  const cutoff = dashboardCutoff(days);
   const queries = [
-    [`SELECT d.display_name, t.last_seen_at, t.tool_id, t.full_name, t.last_activity_at
+    [`SELECT d.display_name, t.last_seen_at, t.tool_id, t.full_name, t.workspace_name, t.last_activity_at
       FROM developers d LEFT JOIN LATERAL (
-        SELECT v.last_seen_at,s.tool_id,r.full_name,s.last_activity_at FROM devices v
+        SELECT v.last_seen_at,s.tool_id,r.full_name,s.workspace_name,s.last_activity_at FROM devices v
         LEFT JOIN sessions s USING (device_id) LEFT JOIN repositories r USING (repository_id)
         WHERE v.developer_id=d.developer_id AND v.revoked_at IS NULL
         ORDER BY s.last_activity_at DESC NULLS LAST,v.last_seen_at DESC NULLS LAST LIMIT 1
@@ -157,7 +169,7 @@ export async function dashboard(pool, days) {
     [`SELECT u.provider,u.model,sum(u.input_tokens) AS input_tokens,sum(u.cached_input_tokens) AS cached_input_tokens,
       sum(u.output_tokens) AS output_tokens FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1
       GROUP BY u.provider,u.model ORDER BY sum(coalesce(u.input_tokens,0)+coalesce(u.output_tokens,0)) DESC`,[cutoff]],
-    [`SELECT s.session_id,d.display_name,s.tool_id,r.full_name,s.last_activity_at,x.summary,x.summarizer_tool
+    [`SELECT s.session_id,s.title,coalesce(s.display_title, s.title) AS display_title,d.display_name,s.tool_id,r.full_name,s.workspace_name,s.last_activity_at,x.summary,x.summarizer_tool
       FROM sessions s JOIN devices v USING(device_id) JOIN developers d USING(developer_id) LEFT JOIN repositories r USING(repository_id)
       LEFT JOIN LATERAL (SELECT summary,summarizer_tool FROM session_summaries z WHERE z.device_id=s.device_id AND z.session_id=s.session_id
       ORDER BY observed_at DESC,summary_id LIMIT 1) x ON true WHERE s.last_activity_at >= $1 ORDER BY s.last_activity_at DESC LIMIT 100`,[cutoff]],
@@ -173,9 +185,9 @@ export async function dashboard(pool, days) {
     running:running.rows[0].count,pulls:pulls.rows,quota:quota.rows };
 }
 
-export function createApi() {
+export function createApi({localView = false} = {}) {
   if (!process.env.DATABASE_URL) return null;
-  if (!process.env.PULSE_VIEW_TOKEN) throw new Error('PULSE_VIEW_TOKEN is required with DATABASE_URL');
+  if (!localView && !process.env.PULSE_VIEW_TOKEN) throw new Error('PULSE_VIEW_TOKEN is required with DATABASE_URL');
   const pool = new pg.Pool({connectionString:process.env.DATABASE_URL,max:5,connectionTimeoutMillis:3000,statement_timeout:5000});
   pool.on('error', error => console.error('Database pool:',error.code || 'error'));
   return {
@@ -195,7 +207,12 @@ export function createApi() {
           }
           data = await ingest(pool,token,Buffer.concat(chunks));
         } else if (req.method==='GET' && url.pathname==='/api/v1/dashboard') {
-          if (!token || !timingSafeEqual(digest(token),digest(process.env.PULSE_VIEW_TOKEN))) fail(401,'login_required');
+          if (localView) {
+            const host = req.headers.host || '';
+            if (!/^(127\.0\.0\.1|localhost)(:[0-9]+)?$/i.test(host) ||
+                !['127.0.0.1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress) ||
+                (req.headers.origin && req.headers.origin !== 'http://' + host)) fail(403,'local_view_only');
+          } else if (!token || !timingSafeEqual(digest(token),digest(process.env.PULSE_VIEW_TOKEN))) fail(401,'login_required');
           const days = Number(url.searchParams.get('days') || 7);
           if (![1,7,30].includes(days)) fail(422,'invalid_days');
           data = await dashboard(pool,days);

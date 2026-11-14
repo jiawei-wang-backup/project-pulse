@@ -8,10 +8,10 @@
 <header><div class="brand"><span class="mark">P</span>Project Pulse</div><button id="logout" hidden>退出</button></header>
 <main>
   <div class="intro"><h1>开发看板</h1></div>
-  <form id="login"><label>看板访问令牌 <input type="password" id="access" required autocomplete="current-password"></label> <button>进入</button></form>
+  <form id="login" hidden><label>看板访问令牌 <input type="password" id="access" required autocomplete="current-password"></label> <button>进入</button></form>
   <p id="status" role="status"></p>
   <div id="dashboard" hidden>
-    <div class="intro"><label>时间 <select id="days"><option value="1">最近 24 小时</option><option value="7" selected>最近 7 天</option><option value="30">最近 30 天</option></select></label>
+    <div class="intro"><label>时间（新加坡） <select id="days"><option value="1">今天</option><option value="7" selected>近 7 天（含今天）</option><option value="30">近 30 天（含今天）</option></select></label>
     <button id="refresh">刷新</button></div>
     <div class="metrics" id="metrics"></div>
     <section><h2>项目空间</h2><div id="projects"></div></section>
