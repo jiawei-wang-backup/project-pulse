@@ -24,7 +24,7 @@ export function createPreviewServer(api = null) {
     let pathname;
     try { pathname = decodeURIComponent(request.url.split('?')[0]); }
     catch { response.writeHead(400).end('Bad request'); return; }
-    if (pathname === '/') pathname = api ? '/assets/live.html' : '/index.html';
+    if (pathname === '/') pathname = api ? '/assets/live-workspace.html' : '/index.html';
     const allowed = pathname === '/index.html' || /^\/(?:src|assets)\//.test(pathname);
     if (!allowed || pathname.includes('\\') || pathname.includes('\0') || pathname.split('/').some(part => part === '..')) {
       response.writeHead(404).end('Not found');

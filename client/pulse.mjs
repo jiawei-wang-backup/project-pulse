@@ -1,10 +1,10 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { open, readdir, stat, mkdir, readFile } from 'node:fs/promises';
+import { open, readdir, stat, mkdir, readFile, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { DatabaseSync } from 'node:sqlite';
+import { loadState } from './state.mjs';
 
 const run = promisify(execFile);
 const root = process.env.PULSE_STATE_DIR || join(homedir(), '.project-pulse');
@@ -15,40 +15,34 @@ const stamp = value => typeof value === 'string' && Number.isFinite(Date.parse(v
 const repoName = value => typeof value === 'string' ? /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/i.exec(value)?.[1]?.toLowerCase() ?? null : null;
 const token = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const safeModel = value => typeof value === 'string' && /^[\w./:-]{1,100}$/.test(value) ? value : null;
+const safeNarrative = (value,max) => typeof value==='string' && value.trim() && [...value].length<=max &&
+  !/https?:\/\/|(?:^|\s)\/\S|[\w.+-]+@[\w.-]+\.[a-z]{2,}|[\x00-\x1f]/i.test(value);
 const json = value => JSON.stringify(value);
 const digest = value => createHash('sha256').update(value).digest('hex');
 const output = value => process.stdout.write(json(value) + '\n');
 
 await mkdir(root, {recursive:true,mode:0o700});
 process.umask(0o077);
-const db = new DatabaseSync(join(root,'state.sqlite'));
-db.exec(`PRAGMA busy_timeout=1000;
-  CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY,value TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS repo_cache (cwd TEXT PRIMARY KEY, name TEXT, checked_at INTEGER NOT NULL);
-  CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, identity TEXT NOT NULL, offset INTEGER NOT NULL, context TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, value TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS child_agents (id TEXT PRIMARY KEY,value TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS counts (id TEXT PRIMARY KEY,value TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY);
-  CREATE TABLE IF NOT EXISTS windows (id TEXT PRIMARY KEY, evidence TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY, body TEXT NOT NULL, attempts INTEGER DEFAULT 0, retry_at INTEGER DEFAULT 0, rejected INTEGER DEFAULT 0);
-`);
-db.prepare('INSERT OR IGNORE INTO config VALUES (?,?)').run('id_seed',randomBytes(32).toString('hex'));
-const seed = db.prepare('SELECT value FROM config WHERE key=?').get('id_seed').value;
+const lockPath = join(root,'collector.lock');
+const lock = await open(lockPath,'wx',0o600);
+await lock.writeFile(String(process.pid));
+try {
+const config = await readFile(join(root,'config.json'),'utf8').then(JSON.parse).catch(error=>{
+  if(error.code==='ENOENT') return {};
+  throw error;
+});
+const {state,save} = await loadState(root);
+if (!state.config.has('id_seed')) state.config.set('id_seed',{key:'id_seed',value:randomBytes(32).toString('hex')});
+const seed = state.config.get('id_seed').value;
 function id(...parts) {
   const hex = createHmac('sha256',seed).update(json(parts)).digest('hex');
   return [hex.slice(0,8),hex.slice(8,12),'8'+hex.slice(13,16),'8'+hex.slice(17,20),hex.slice(20,32)].join('-');
 }
-function transaction(fn) {
-  db.exec('BEGIN IMMEDIATE');
-  try { const result=fn(); db.exec('COMMIT'); return result; }
-  catch (error) { db.exec('ROLLBACK'); throw error; }
-}
-function queue({sessions=[],agents=[],summaries=[],usage=[],quota=[]}) {
+function queue({sessions=[],agents=[],summaries=[],usage=[],quota=[],projects=[]}) {
   const batch_id=randomUUID();
-  const body=json({schema_version:1,batch_id,sent_at:new Date().toISOString(),collector_version:version,sessions,agents,summaries,usage,...(quota.length ? {quota} : {})});
+  const body=json({schema_version:1,batch_id,sent_at:new Date().toISOString(),collector_version:version,sessions,agents,summaries,usage,...(quota.length ? {quota} : {}),...(projects.length ? {projects} : {})});
   if (Buffer.byteLength(body)>256*1024) throw new Error('batch_size');
-  db.prepare('INSERT INTO outbox(id,body) VALUES (?,?)').run(batch_id,body);
+  state.outbox.set(batch_id,{id:batch_id,body,attempts:0,retry_at:0,rejected:0});
 }
 
 async function* files(directory, depth=0) {
@@ -67,14 +61,14 @@ async function* files(directory, depth=0) {
 
 async function repository(cwd) {
   if(typeof cwd!=='string' || !cwd || Date.now()>=deadline) return null;
-  const cached=db.prepare('SELECT * FROM repo_cache WHERE cwd=?').get(cwd);
+  const cached=state.repo_cache.get(cwd);
   if(cached && cached.checked_at>Date.now()-3600000) return cached.name;
   let name=null;
   try {
     const {stdout}=await run('git',['-C',cwd,'config','--get','remote.origin.url'],{timeout:500,maxBuffer:8192});
     name=repoName(stdout.trim());
   } catch {}
-  db.prepare('INSERT OR REPLACE INTO repo_cache VALUES (?,?,?)').run(cwd,name,Date.now());
+  state.repo_cache.set(cwd,{cwd,name,checked_at:Date.now()});
   return name;
 }
 
@@ -148,32 +142,31 @@ async function refreshCodexTitles() {
     if (title) titles.set(id('codex', entry.id), title);
   }
 
-  transaction(() => {
-    const select = db.prepare('SELECT value FROM sessions WHERE id=?');
-    const update = db.prepare('UPDATE sessions SET value=? WHERE id=?');
+  {
     const changed = [];
     for (const [sessionId, title] of titles) {
-      const stored = select.get(sessionId);
+      const stored = state.sessions.get(sessionId);
       if (!stored) continue;
       const next = JSON.parse(stored.value);
       if (next.title === title) continue;
       next.title = title;
       next.revision++;
-      update.run(json(next), sessionId);
-      const {state, evidence, ...session} = next;
+      state.sessions.set(sessionId,{id:sessionId,value:json(next)});
+      const {state: agentState, evidence, ...session} = next;
       changed.push(session);
       if (changed.length === 100) break;
     }
     if (changed.length) queue({sessions:changed});
-  });
+  }
   return titles;
 }
 
 async function prepare() {
   const titles = await refreshCodexTitles();
-  const existing=db.prepare('SELECT * FROM windows ORDER BY rowid LIMIT 1').get();
-  if(existing) return {window_id:existing.id,evidence:JSON.parse(existing.evidence)};
-  const pending=db.prepare('SELECT coalesce(sum(length(body)),0) AS bytes FROM outbox').get().bytes;
+  const project_candidates=(process.env.PULSE_REPOSITORIES || '').toLowerCase().split(',').map(s=>s.trim()).filter(Boolean);
+  const existing=state.windows.values().next().value;
+  if(existing) return {window_id:existing.id,evidence:JSON.parse(existing.evidence),project_candidates};
+  const pending=[...state.outbox.values()].reduce((sum,batch)=>sum+Buffer.byteLength(batch.body),0);
   if(pending>=63*1024*1024) return {window_id:null,evidence:[],status:'queue_full'};
   const sources=[
     ['codex',process.env.PULSE_CODEX_DIR,codex,'openai'],
@@ -189,7 +182,7 @@ async function prepare() {
       if(remaining<=0 || events>=2000 || evidence.length>=10 || Date.now()>deadline || inspected++>=2000) break;
       const info=await stat(path).catch(()=>null);
       if(!info || info.mtimeMs < Date.now()-7*86400000) continue;
-      const saved=db.prepare('SELECT * FROM files WHERE path=?').get(path);
+      const saved=state.files.get(path);
       const identity=[info.dev,info.ino,info.birthtimeMs].join(':');
       const same=saved?.identity===identity && saved.offset<=info.size;
       let context=same ? JSON.parse(saved.context) : {};
@@ -213,7 +206,7 @@ async function prepare() {
         }
       }
       const fallbackRepo=context.repo || await repository(context.cwd);
-      transaction(()=>{
+      {
         const changes=new Map();
         const excerpts=new Map();
         const usage=[];
@@ -235,21 +228,21 @@ async function prepare() {
           if(tool==='codex' && (context.child || context.parent)) {
             if(typeof context.parent!=='string') continue;
             const parentThread=id(tool,context.parent);
-            const parentSession=db.prepare('SELECT 1 FROM sessions WHERE id=?').get(parentThread);
-            const parentChild=db.prepare('SELECT value FROM child_agents WHERE id=?').get(parentThread);
+            const parentSession=state.sessions.has(parentThread);
+            const parentChild=state.child_agents.get(parentThread);
             if(!parentSession && !parentChild) {
               offset-=line.length+1;
               break;
             }
             const parent=parentChild ? JSON.parse(parentChild.value) : null;
             const agent_id=id(session_id,'subagent');
-            const previous=childAgents.get(agent_id) || JSON.parse(db.prepare('SELECT value FROM child_agents WHERE id=?').get(session_id)?.value || 'null');
+            const previous=childAgents.get(agent_id) || JSON.parse(state.child_agents.get(session_id)?.value || 'null');
             if(previous && parsed.at<previous.last_activity_at) continue;
             const agent={agent_id,session_id:parent?.session_id || parentThread,
               parent_agent_id:parent?.agent_id || id(parentThread,'main'),kind:'subagent',role:null,
               state:parsed.state || previous?.state || 'unknown',last_activity_at:parsed.at,revision:(previous?.revision || 0)+1};
             childAgents.set(agent_id,agent);
-            db.prepare('INSERT OR REPLACE INTO child_agents VALUES (?,?)').run(session_id,json(agent));
+            state.child_agents.set(session_id,{id:session_id,value:json(agent)});
             // Child rollouts can inherit parent history and cumulative counters.
             continue;
           }
@@ -257,7 +250,7 @@ async function prepare() {
             offset-=line.length+1;
             break;
           }
-          const stored=db.prepare('SELECT value FROM sessions WHERE id=?').get(session_id);
+          const stored=state.sessions.get(session_id);
           const old=changes.get(session_id) || (stored && JSON.parse(stored.value));
           const latest=!old || parsed.at>=old.last_activity_at;
           const title = titles.get(session_id) || old?.title;
@@ -291,26 +284,28 @@ async function prepare() {
           }
           if(!parsed.counts) continue;
           const event_id=id(session_id,parsed.key || digest(line));
-          if(!db.prepare('INSERT OR IGNORE INTO seen VALUES (?)').run(event_id).changes) continue;
+          if(state.seen.has(event_id)) continue;
+          state.seen.set(event_id,{id:event_id});
           let counts=parsed.counts;
           if(parsed.cumulative) {
-            const last=db.prepare('SELECT value FROM counts WHERE id=?').get(session_id);
+            const last=state.counts.get(session_id);
             const previous=last && JSON.parse(last.value);
-            db.prepare('INSERT OR REPLACE INTO counts VALUES (?,?)').run(session_id,json(counts));
+            state.counts.set(session_id,{id:session_id,value:json(counts)});
             counts=counts.map((value,i)=>value===null || (previous && (previous[i]===null || value<previous[i])) ? null : value-(previous?.[i] || 0));
           }
           usage.push({event_id,session_id,agent_id:id(session_id,'main'),occurred_at:parsed.at,provider,
             model:parsed.model ?? null,accounting:'billable',input_tokens:counts[0],cached_input_tokens:counts[1]!==null && counts[0]!==null && counts[1]>counts[0] ? null : counts[1],output_tokens:counts[2]});
         }
-        db.prepare('INSERT OR REPLACE INTO files VALUES (?,?,?,?)').run(path,identity,offset,json(context));
+        state.files.set(path,{path,identity,offset,context:json(context)});
         const sessions=[], agents=[];
         for(const next of changes.values()) {
-          db.prepare('INSERT OR REPLACE INTO sessions VALUES (?,?)').run(next.session_id,json(next));
-          const {state,evidence:signals,...session}=next;
+          state.sessions.set(next.session_id,{id:next.session_id,value:json(next)});
+          const {state: agentState,evidence:signals,...session}=next;
           sessions.push(session);
           agents.push({agent_id:id(session.session_id,'main'),session_id:session.session_id,parent_agent_id:null,
-            kind:'main',role:null,state,last_activity_at:session.last_activity_at,revision:session.revision});
-          const item={session_id:session.session_id,tool,repository:session.repository,observed_at:session.last_activity_at,signals,activity:excerpts.get(session.session_id) || []};
+            kind:'main',role:null,state:agentState,last_activity_at:session.last_activity_at,revision:session.revision});
+          const item={session_id:session.session_id,tool,repository:session.repository,workspace_name:session.workspace_name || null,
+            observed_at:session.last_activity_at,signals,activity:excerpts.get(session.session_id) || []};
           const index=evidence.findIndex(entry=>entry.session_id===session.session_id);
           if(index>=0) {
             item.activity=[...(evidence[index].activity || []),...item.activity].slice(-2);
@@ -329,26 +324,26 @@ async function prepare() {
         for(let i=0;i<snapshots.length;i+=100) queue({quota:snapshots.slice(i,i+100)});
         if(changes.size) {
           const window_id=id('evidence',evidence);
-          db.prepare('DELETE FROM windows').run();
-          db.prepare('INSERT INTO windows VALUES (?,?)').run(window_id,json(evidence));
+          state.windows.clear();
+          state.windows.set(window_id,{id:window_id,evidence:json(evidence)});
         }
-      });
+      }
     }
   }
-  const window=db.prepare('SELECT * FROM windows LIMIT 1').get();
-  return window ? {window_id:window.id,evidence:JSON.parse(window.evidence)} : {window_id:null,evidence:[]};
+  const window=state.windows.values().next().value;
+  return window ? {window_id:window.id,evidence:JSON.parse(window.evidence),project_candidates} : {window_id:null,evidence:[],project_candidates};
 }
 
 function submit(data) {
   if (!data.window_id) return;
-  transaction(()=>{
-    const window=db.prepare('SELECT * FROM windows WHERE id=?').get(data.window_id);
-    if(!window && db.prepare('SELECT value FROM config WHERE key=?').get('submitted:'+data.window_id)) return;
+  {
+    const window=state.windows.get(data.window_id);
+    if(!window && state.config.has('submitted:'+data.window_id)) return;
     if(!window) throw new Error('unknown_window');
     const evidence=JSON.parse(window.evidence);
-    const tool=process.env.PULSE_SUMMARIZER_TOOL;
+    const tool=process.env.PULSE_SUMMARIZER_TOOL || config.summarizer_tool;
     if(!['codex','claude_code'].includes(tool) || !Array.isArray(data.summaries) || data.summaries.length!==evidence.length) throw new Error('invalid_summary');
-    const sessions=[], summaries=[], seen=new Set();
+    const sessions=[], summaries=[], projects=[], seen=new Set();
     for(const row of data.summaries) {
       const item=evidence.find(entry=>entry.session_id===row.session_id && entry.observed_at===row.observed_at);
       const reasons={on_track:['progress_observed'],blocked:['dependency_unavailable','repeated_failure'],unknown:['insufficient_evidence']};
@@ -356,56 +351,89 @@ function submit(data) {
          typeof row.summary!=='string' || !row.summary.trim() || [...row.summary].length>200 ||
          /https?:\/\/|(?:^|\s)\/\S|[\w.+-]+@[\w.-]+\.[a-z]{2,}|[\x00-\x1f]/i.test(row.summary)) throw new Error('invalid_summary');
       seen.add(row.session_id);
-      const next=JSON.parse(db.prepare('SELECT value FROM sessions WHERE id=?').get(row.session_id).value);
+      const next=JSON.parse(state.sessions.get(row.session_id).value);
       if(next.last_activity_at===row.observed_at) {
         next.revision++;
         next.project_observation={state:row.state,reason_code:row.reason_code,observed_at:row.observed_at};
-        db.prepare('UPDATE sessions SET value=? WHERE id=?').run(json(next),row.session_id);
-        const {state,evidence:signals,...session}=next;
+        state.sessions.set(row.session_id,{id:row.session_id,value:json(next)});
+        const {state: agentState,evidence:signals,...session}=next;
         sessions.push(session);
       }
       summaries.push({summary_id:id(data.window_id,row.session_id),session_id:row.session_id,observed_at:row.observed_at,
         summary:row.summary,summarizer_tool:tool,prompt_version:version});
     }
-    queue({sessions,summaries});
-    db.prepare('INSERT OR IGNORE INTO config VALUES (?,?)').run('submitted:'+data.window_id,'1');
-    db.prepare('DELETE FROM windows WHERE id=?').run(data.window_id);
-  });
+    if(data.projects !== undefined && (!Array.isArray(data.projects) || data.projects.length>5)) throw new Error('invalid_projects');
+    const reported=new Set();
+    const allowed=new Set((process.env.PULSE_REPOSITORIES || '').toLowerCase().split(',').map(s=>s.trim()).filter(Boolean));
+    for(const row of data.projects || []) {
+      const source=evidence.find(item=>item.session_id===row.source_session_id && item.observed_at===row.observed_at);
+      const key=typeof row.project_key==='string' ? row.project_key.trim() : '';
+      const validKey=source && (key===source.repository || key===source.workspace_name || allowed.has(key.toLowerCase()));
+      if(!validKey || reported.has(key) || !safeNarrative(row.goal,200) ||
+        !Array.isArray(row.milestones) || row.milestones.length<1 || row.milestones.length>12) throw new Error('invalid_project_report');
+      for(const milestone of row.milestones) {
+        if(!milestone || !safeNarrative(milestone.title,120) ||
+          !['completed','pending'].includes(milestone.state) || !safeNarrative(milestone.evidence,200)) throw new Error('invalid_project_milestone');
+      }
+      reported.add(key);
+      projects.push({report_id:id(data.window_id,key),source_session_id:source.session_id,project_key:key,
+        goal:row.goal,milestones:row.milestones,observed_at:source.observed_at,summarizer_tool:tool,prompt_version:version});
+    }
+    queue({sessions,summaries,projects});
+    state.config.set('submitted:'+data.window_id,{key:'submitted:'+data.window_id,value:'1'});
+    state.windows.delete(data.window_id);
+  }
 }
 
 async function flush() {
-  const first=db.prepare('SELECT * FROM outbox WHERE rejected=0 ORDER BY rowid LIMIT 2').all();
-  if(!first.length) return {sent_batches:0,pending_batches:0};
-  const url=new URL(process.env.PULSE_SERVER_URL);
-  if(url.protocol!=='https:' && !(url.protocol==='http:' && ['localhost','127.0.0.1','[::1]'].includes(url.hostname))) throw new Error('https_required');
-  if(!process.env.PULSE_DEVICE_TOKEN) throw new Error('missing_device_token');
+  const pending = () => [...state.outbox.values()].filter(batch=>!batch.rejected);
   let sent=0;
-  for(const batch of first) {
-    if(batch.retry_at>Date.now() || Date.now()>=deadline) break;
-    let response;
-    try {
-      response=await fetch(new URL('/api/v1/reports',url),{
-        method:'POST',body:batch.body,redirect:'error',
-        headers:{'Content-Type':'application/json',Authorization:'Bearer '+process.env.PULSE_DEVICE_TOKEN},
-        signal:AbortSignal.timeout(Math.max(1,Math.min(4000,deadline-Date.now())))
-      });
-      if(response.ok && (await response.json()).batch_id===batch.id) {
-        db.prepare('DELETE FROM outbox WHERE id=?').run(batch.id); sent++; continue;
-      }
-    } catch {}
-    const status=response?.status;
-    const retryHeader=response?.headers.get('Retry-After');
-    const retryAfter=retryHeader ? (/^\d+$/.test(retryHeader) ? Date.now()+Number(retryHeader)*1000 : Date.parse(retryHeader)) : 0;
-    const delay=Math.min(30,2**Math.min(5,batch.attempts))*60000 + Math.floor(Math.random()*15000);
-    db.prepare('UPDATE outbox SET attempts=attempts+1,retry_at=?,rejected=? WHERE id=?')
-      .run(Math.max(Date.now()+delay,retryAfter || 0),[400,409,413,415,422].includes(status) ? 1 : 0,batch.id);
-    break;
+  if(pending().length) {
+    const url=new URL(process.env.PULSE_SERVER_URL || config.server_url);
+    if(url.protocol!=='https:' && !(url.protocol==='http:' && ['localhost','127.0.0.1','[::1]'].includes(url.hostname))) throw new Error('https_required');
+    const deviceToken=process.env.PULSE_DEVICE_TOKEN || config.device_token;
+    if(typeof deviceToken!=='string' || !/^[A-Za-z0-9._~-]+$/.test(deviceToken)) throw new Error('invalid_device_token');
+    for(const batch of pending().slice(0,2)) {
+      if(batch.retry_at>Date.now() || Date.now()>=deadline) break;
+      let status, retryAfter;
+      try {
+        const params=[
+          '--max-time',String(Math.min(4,(deadline-Date.now())/1000)),
+          '--silent','--show-error','--include','--config','-',
+          '--header','Content-Type: application/json','--request','POST',
+          new URL('/api/v1/reports',url).href
+        ];
+        const child=run('curl',['-q',...params],{maxBuffer:512*1024});
+        child.child.stdin.on('error',()=>{});
+        child.child.stdin.end('header = '+json('Authorization: Bearer '+deviceToken)+'\ndata-binary = '+json(batch.body)+'\n');
+        const {stdout}=await child;
+        const boundary=stdout.lastIndexOf('\r\n\r\n');
+        const headers=stdout.slice(0,boundary);
+        status=Number([...headers.matchAll(/^HTTP\/[^ ]+ (\d+)/gm)].at(-1)?.[1]);
+        retryAfter=headers.match(/^retry-after:\s*([^\r\n]+)/im)?.[1];
+        if(status===200) {
+          const receipt=JSON.parse(stdout.slice(boundary+4));
+          if(receipt.batch_id===batch.id && receipt.status==='committed') {
+            state.outbox.delete(batch.id);
+            await save();
+            sent++;
+            continue;
+          }
+        }
+      } catch {}
+      const retryAt=retryAfter ? (/^\d+$/.test(retryAfter) ? Date.now()+Number(retryAfter)*1000 : Date.parse(retryAfter)) : 0;
+      batch.retry_at=Math.max(Date.now()+Math.min(30,2**Math.min(5,batch.attempts))*60000,retryAt || 0);
+      batch.attempts++;
+      batch.rejected=Number([400,409,413,415,422].includes(status));
+      await save();
+      break;
+    }
   }
-  return {sent_batches:sent,pending_batches:db.prepare('SELECT count(*) AS n FROM outbox WHERE rejected=0').get().n,
-    rejected_batches:db.prepare('SELECT count(*) AS n FROM outbox WHERE rejected=1').get().n};
+  return {sent_batches:sent,pending_batches:pending().length,rejected_batches:state.outbox.size-pending().length};
 }
+
 try {
-  if(command==='prepare') output(await prepare());
+  if(command==='prepare') { const window=await prepare(); await save(); output(window); }
   else if(command==='submit') {
     const parts=[];
     let size=0;
@@ -415,6 +443,7 @@ try {
       parts.push(chunk);
     }
     submit(JSON.parse(Buffer.concat(parts).toString() || '{}'));
+    await save();
     output(await flush());
   } else if(command==='flush') output(await flush());
   else throw new Error('usage: pulse.mjs prepare|submit|flush');
@@ -422,4 +451,5 @@ try {
   const message=/^[\w: |.-]{1,80}$/.test(error.message) ? error.message : 'collector_failed';
   output({status:'error',error_code:message});
   process.exitCode=1;
-} finally { db.close(); }
+}
+} finally { await lock.close(); await unlink(lockPath); }

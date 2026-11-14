@@ -4,15 +4,19 @@ import pg from 'pg';
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const digest = value => createHash('sha256').update(value).digest();
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
+const safeNarrative = (value,max) => typeof value==='string' && value.trim() && [...value].length<=max &&
+  !/https?:\/\/|(?:^|\s)\/\S|[\w.+-]+@[\w.-]+\.[a-z]{2,}|[\x00-\x1f]/i.test(value);
 
 function validate(report) {
   const arrays = ['sessions', 'agents', 'summaries', 'usage'];
   const hasQuota = report && Object.hasOwn(report,'quota');
+  const hasProjects = report && Object.hasOwn(report,'projects');
   if (hasQuota) arrays.push('quota');
+  if (hasProjects) arrays.push('projects');
   const keys = (row, fields) => {
     if (!row || typeof row !== 'object' || Object.keys(row).sort().join(' ') !== fields.split(' ').sort().join(' ')) fail(422, 'invalid_fields');
   };
-  keys(report, 'schema_version batch_id sent_at collector_version sessions agents summaries usage' + (hasQuota ? ' quota' : ''));
+  keys(report, 'schema_version batch_id sent_at collector_version sessions agents summaries usage' + (hasQuota ? ' quota' : '') + (hasProjects ? ' projects' : ''));
   if (report.schema_version !== 1 || !uuid.test(report.batch_id) ||
       arrays.some(key => !Array.isArray(report[key])) ||
       arrays.reduce((sum, key) => sum + report[key].length, 0) > 100) fail(422, 'invalid_batch');
@@ -25,6 +29,19 @@ function validate(report) {
   const timestamp = value => typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value) && Number.isFinite(Date.parse(value));
   const version = value => typeof value === 'string' && /^\d+\.\d+\.\d+$/.test(value) && value.length <= 32;
   if (!timestamp(report.sent_at) || !version(report.collector_version)) fail(422, 'invalid_metadata');
+  for (const row of report.projects || []) {
+    keys(row,'report_id source_session_id project_key goal milestones observed_at summarizer_tool prompt_version');
+    if (!uuid.test(row.report_id) || !uuid.test(row.source_session_id) || !timestamp(row.observed_at) ||
+        !['codex','claude_code'].includes(row.summarizer_tool) || !version(row.prompt_version) ||
+        typeof row.project_key!=='string' || !/^(?:[\w.-]+\/[\w.-]+|[^\\/:\x00-\x1f\x7f]{1,120})$/.test(row.project_key) ||
+        !safeNarrative(row.goal,200) ||
+        !Array.isArray(row.milestones) || row.milestones.length<1 || row.milestones.length>12) fail(422,'invalid_project_report');
+    for(const milestone of row.milestones) {
+      keys(milestone,'title state evidence');
+      if(!safeNarrative(milestone.title,120) || !['completed','pending'].includes(milestone.state) ||
+         !safeNarrative(milestone.evidence,200)) fail(422,'invalid_project_milestone');
+    }
+  }
   for (const row of report.quota || []) {
     keys(row,'account_key limit_id window_key observed_at window_minutes used_percent resets_at');
     if (!uuid.test(row.account_key) || !/^[a-z0-9_:-]{1,80}$/i.test(row.limit_id) ||
@@ -120,6 +137,7 @@ export async function ingest(pool, token, raw) {
         if (cycle.rowCount) fail(422,'agent_cycle');
       }
       for (const row of report.summaries) await upsert(client,'session_summaries',['device_id','summary_id'],{device_id,...row});
+      for (const row of report.projects || []) await upsert(client,'project_reports',['device_id','report_id'],{device_id,...row,milestones:JSON.stringify(row.milestones)});
       for (const row of report.usage) await upsert(client,'usage_events',['device_id','event_id'],{device_id,...row});
       for (const {account_key,...row} of report.quota || []) {
         const {developer_id}=auth.rows[0];
@@ -178,11 +196,41 @@ export async function dashboard(pool, days) {
     [`SELECT r.full_name,p.* FROM pull_requests p JOIN repositories r USING(repository_id) ORDER BY r.full_name,p.created_at DESC,p.number DESC LIMIT 500`,[]],
     [`SELECT DISTINCT ON (q.account_id,q.limit_id,q.window_key) d.display_name,a.provider,q.limit_id,q.window_key,q.used_percent,q.resets_at,q.observed_at
       FROM quota_snapshots q JOIN provider_accounts a USING(account_id) JOIN developers d ON d.developer_id=q.developer_id
-      ORDER BY q.account_id,q.limit_id,q.window_key,q.observed_at DESC`,[]]
+      ORDER BY q.account_id,q.limit_id,q.window_key,q.observed_at DESC`,[]],
+    [`SELECT a.agent_id,a.kind,a.role,a.state,a.last_activity_at,s.session_id,s.display_title,s.title,s.tool_id,s.workspace_name,r.full_name,d.display_name,u.provider,u.model
+      FROM agents a JOIN sessions s ON s.device_id=a.device_id AND s.session_id=a.session_id
+      JOIN devices v ON v.device_id=a.device_id JOIN developers d ON d.developer_id=v.developer_id
+      LEFT JOIN repositories r ON r.repository_id=s.repository_id
+      LEFT JOIN LATERAL (SELECT provider,model FROM usage_events WHERE device_id=a.device_id AND session_id=a.session_id
+        ORDER BY occurred_at DESC LIMIT 1) u ON true
+      WHERE a.last_activity_at >= $1 ORDER BY a.last_activity_at DESC LIMIT 100`,[cutoff]],
+    [`SELECT to_char(u.occurred_at AT TIME ZONE 'Asia/Singapore','YYYY-MM-DD') AS day,
+      sum(u.input_tokens) AS input_tokens,sum(u.output_tokens) AS output_tokens
+      FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1
+      GROUP BY day ORDER BY day`,[cutoff]],
+    [`SELECT DISTINCT ON (project_key) project_key,goal,milestones,observed_at,summarizer_tool
+      FROM project_reports ORDER BY project_key,observed_at DESC,report_id DESC`,[]],
+    [`SELECT coalesce(r.full_name,s.workspace_name) AS project_key,
+      sum(coalesce(u.input_tokens,0)) AS input_tokens,sum(coalesce(u.output_tokens,0)) AS output_tokens
+      FROM usage_events u JOIN sessions s ON s.device_id=u.device_id AND s.session_id=u.session_id
+      LEFT JOIN repositories r ON r.repository_id=s.repository_id
+      WHERE u.accounting='billable' AND u.occurred_at >= $1
+      GROUP BY coalesce(r.full_name,s.workspace_name) ORDER BY sum(coalesce(u.input_tokens,0)+coalesce(u.output_tokens,0)) DESC`,[cutoff]],
+    [`SELECT u.session_id,sum(coalesce(u.input_tokens,0)) AS input_tokens,
+      sum(coalesce(u.output_tokens,0)) AS output_tokens
+      FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1
+      GROUP BY u.session_id`,[cutoff]],
+    [`SELECT d.display_name,r.full_name,s.workspace_name,count(DISTINCT s.session_id)::int AS session_count,
+      max(s.last_activity_at) AS last_activity_at
+      FROM sessions s JOIN devices v USING(device_id) JOIN developers d USING(developer_id)
+      LEFT JOIN repositories r USING(repository_id)
+      WHERE s.last_activity_at >= $1
+      GROUP BY d.display_name,r.full_name,s.workspace_name ORDER BY d.display_name,last_activity_at DESC`,[cutoff]]
   ];
-  const [people,projects,models,sessions,agents,running,pulls,quota] = await Promise.all(queries.map(args=>pool.query(...args)));
+  const [people,projects,models,sessions,agents,running,pulls,quota,agentDetails,usageDays,projectReports,projectUsage,sessionUsage,memberships] = await Promise.all(queries.map(args=>pool.query(...args)));
   return { people:people.rows,projects:projects.rows,models:models.rows,sessions:sessions.rows,agents:agents.rows,
-    running:running.rows[0].count,pulls:pulls.rows,quota:quota.rows };
+    running:running.rows[0].count,pulls:pulls.rows,quota:quota.rows,agent_details:agentDetails.rows,usage_days:usageDays.rows,
+    project_reports:projectReports.rows,project_usage:projectUsage.rows,session_usage:sessionUsage.rows,memberships:memberships.rows };
 }
 
 export function createApi({localView = false} = {}) {

@@ -34,6 +34,7 @@ fi
 psql_local < db/002_session_title.sql >/dev/null
 psql_local < db/003_session_display_title.sql >/dev/null
 psql_local < db/004_session_workspace.sql >/dev/null
+psql_local < db/005_project_reports.sql >/dev/null
 case "${1:-serve}" in
   serve) PULSE_LOCAL_VIEW=1 PULSE_HOST=127.0.0.1 exec node server.mjs ;;
   sync) exec node db/sync-prs.mjs ;;

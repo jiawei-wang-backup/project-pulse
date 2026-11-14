@@ -54,9 +54,12 @@ try {
   const window=await cli('prepare');
   assert.equal(window.evidence.length,2);
   assert.notEqual(window.evidence[0].session_id,window.evidence[1].session_id);
+  const source=window.evidence.find(row=>row.repository==='example/pulse');
   const submitted=await cli('submit',{window_id:window.window_id,summaries:window.evidence.map(row=>({
     session_id:row.session_id,observed_at:row.observed_at,summary:'已观测到开发活动',state:'unknown',reason_code:'insufficient_evidence'
-  }))});
+  })),projects:[{project_key:'example/pulse',source_session_id:source.session_id,observed_at:source.observed_at,
+    goal:'采集并展示开发活动',milestones:[{title:'采集会话',state:'completed',evidence:'测试会话已进入上报窗口'},
+      {title:'接入真实设备',state:'pending',evidence:'当前仅有测试设备'}]}]});
   assert.equal(submitted.sent_batches,2);
   let pending=submitted.pending_batches;
   for(let i=0;i<5 && pending;i++) pending=(await cli('flush')).pending_batches;
@@ -68,6 +71,11 @@ try {
   assert.equal(data.agents.find(row=>row.kind==='subagent').count,1);
   assert.equal(data.quota[0].used_percent,'23');
   assert.ok(data.sessions.every(row=>row.summarizer_tool==='claude_code'));
+  assert.equal(data.project_reports[0].project_key,'example/pulse');
+  assert.equal(data.project_reports[0].milestones[0].state,'completed');
+  assert.ok(Array.isArray(data.project_usage));
+  assert.equal(data.session_usage.find(row=>row.session_id===source.session_id).input_tokens,'10');
+  assert.ok(data.memberships.some(row=>row.display_name==='开发者'));
   assert.equal(data.models.find(row=>row.model==='codex-fixture').input_tokens,'10');
   assert.equal(data.models.find(row=>row.model==='claude-fixture').input_tokens,'7');
   const heartbeat={schema_version:1,batch_id:randomUUID(),sent_at:at,collector_version:'1.0.0',sessions:[],agents:[],summaries:[],usage:[]};
