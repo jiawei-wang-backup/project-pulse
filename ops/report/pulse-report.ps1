@@ -84,6 +84,22 @@ if ($Action -eq 'Submit') {
     $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if (!$Label) { $Label=$plan.label }
     if (!$GitHubLogin) { $GitHubLogin=$plan.github_login }
+    $pulls=@()
+    if (Test-Path -LiteralPath (Join-Path $WorkDir 'pulls.json')) {
+        $rawPulls=Get-Content -LiteralPath (Join-Path $WorkDir 'pulls.json') -Raw -Encoding UTF8
+        if (!$rawPulls.TrimStart().StartsWith('[')) {throw 'pulls.json must be an array.'}
+        $pulls=@($rawPulls | ConvertFrom-Json)
+        if ($pulls.Count -gt 50) {throw 'At most 50 checked PR records per request.'}
+    }
+    $prBodyPath=Join-Path $WorkDir 'pr-request.json'
+    if ($pulls.Count -or (Test-Path -LiteralPath $prBodyPath)) {
+        [void][IO.Directory]::CreateDirectory($StateDir)
+        $pendingPath=Join-Path $StateDir ('.pulse-state-'+(Hash $Server.TrimEnd('/')).Substring(0,12)+'.json')
+        $pending=if(Test-Path -LiteralPath $pendingPath){Get-Content -LiteralPath $pendingPath -Raw -Encoding UTF8 | ConvertFrom-Json}else{[pscustomobject]@{report_from=[DateTime]::UtcNow.AddDays(-7).ToString('yyyy-MM-ddTHH:mm:ssZ');next_index=0;pending_work=$null}}
+        if ($pending.pending_work -and $pending.pending_work -ne $WorkDir -and (Test-Path -LiteralPath (Join-Path $pending.pending_work 'plan.json'))) {throw 'Finish the previous pending report first.'}
+        $pending | Add-Member -NotePropertyName pending_work -NotePropertyValue $WorkDir -Force
+        WriteJson ($pendingPath+'.tmp') $pending;Move-Item -Force -LiteralPath ($pendingPath+'.tmp') -Destination $pendingPath
+    }
     $edits = @()
     if ([IO.File]::Exists($editsPath)) { $edits = @(Get-Content -LiteralPath $editsPath -Raw -Encoding UTF8 | ConvertFrom-Json) }
     $sent = 0
@@ -132,7 +148,16 @@ if ($Action -eq 'Submit') {
         $receipts+=@{batch_id=$batch.batch_id;usage=$receipt.usage}
         $sent++
     }
-    @{submitted_batches=$sent; server_cursor_already_advanced=$alreadyCommitted;receipts=$receipts;usage_verified=($alreadyCommitted -eq 0); bytes_read=$plan.bytes_read; backlog=$plan.backlog} | ConvertTo-Json -Depth 10 -Compress
+    $prReceipt=$null
+    if ($pulls.Count -or (Test-Path -LiteralPath $prBodyPath)) {
+        $directory=Request '/api/v1/report-directory'
+        if ('client_pr_ingest' -notin $directory.capabilities) {throw 'Server upgrade required: client_pr_ingest.'}
+        if (!(Test-Path -LiteralPath $prBodyPath)) {WriteJson $prBodyPath @{schema_version=1;batch_id=[guid]::NewGuid().ToString();sent_at=[DateTime]::UtcNow.ToString('o');pulls=$pulls}}
+        $expected=Get-Content -LiteralPath $prBodyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $prReceipt=Request '/api/v1/report-pulls' $prBodyPath
+        if ($prReceipt.status -ne 'committed' -or $prReceipt.batch_id -ne $expected.batch_id -or $prReceipt.pulls -ne @($expected.pulls).Count) {throw 'Unexpected PR receipt.'}
+    }
+    @{submitted_batches=$sent; server_cursor_already_advanced=$alreadyCommitted;receipts=$receipts;pr_receipt=$prReceipt;usage_verified=($alreadyCommitted -eq 0); bytes_read=$plan.bytes_read; backlog=$plan.backlog} | ConvertTo-Json -Depth 10 -Compress
     return
 }
 
@@ -167,7 +192,7 @@ if (Test-Path -LiteralPath $ProjectMap) {
 if (!$scanState.workspace_repositories) {$scanState | Add-Member -NotePropertyName workspace_repositories -NotePropertyValue ([pscustomobject]@{}) -Force}
 $projectUnresolved=[Collections.Generic.List[object]]::new()
 if ($scanState.pending_work -and (Test-Path -LiteralPath (Join-Path $scanState.pending_work 'plan.json'))) {
-    $recovery=& $PSCommandPath -Action Submit -WorkDir $scanState.pending_work -Server $Server
+    $recovery=& $PSCommandPath -Action Submit -WorkDir $scanState.pending_work -Server $Server -StateDir $StateDir
     $recovered=($recovery -join "`n") | ConvertFrom-Json
     $scanState.recovery_unverified=(!$recovered.usage_verified)
     $scanState.pending_work=$null

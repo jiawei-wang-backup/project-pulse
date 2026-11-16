@@ -146,6 +146,19 @@ try {
   assert.equal((await readCursor()).project_report.goal,'补齐项目目标');
   assert.equal((await pool.query('SELECT count(*) FROM usage_events WHERE device_id=$1 AND session_id=$2',[device,sourceId])).rows[0].count,'1');
   assert.equal((await sendDirect({...mapping,batch_id:randomUUID(),mappings:[{session_id:randomUUID(),repository:'example/moved'}]})).error,'invalid_project_backfill');
+  const prBatch={schema_version:1,batch_id:randomUUID(),sent_at:at,pulls:[{
+    source_session_id:sourceId,repository:'example/moved',github_id:43,number:7,title:'Client discovered PR',
+    url:'https://github.com/example/moved/pull/7',state:'merged',is_draft:false,created_at:at,updated_at:at}]};
+  const submitPr=async body=>(await fetch(base+'/api/v1/report-pulls',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body)})).json();
+  assert.deepEqual(await submitPr(prBatch),{status:'committed',batch_id:prBatch.batch_id,pulls:1});
+  assert.deepEqual(await submitPr(prBatch),{status:'committed',batch_id:prBatch.batch_id,pulls:1});
+  assert.equal((await submitPr({...prBatch,sent_at:new Date(Date.now()+1000).toISOString()})).error,'batch_conflict');
+  assert.equal((await submitPr({...prBatch,batch_id:randomUUID(),pulls:[{...prBatch.pulls[0],source_session_id:randomUUID()}]})).error,'pr_session_missing');
+  assert.equal((await submitPr({...prBatch,batch_id:randomUUID(),pulls:[{...prBatch.pulls[0],url:'https://example.com/other'}]})).error,'invalid_pr_record');
+  const prData=await (await fetch(base+'/api/v1/dashboard')).json();
+  assert.equal(prData.pulls.filter(p=>p.full_name==='example/moved'&&p.number==='7').length,1);
+  assert.equal((await readCursor()).offset,300);
+  assert.equal((await pool.query('SELECT count(*) FROM usage_events WHERE device_id=$1 AND session_id=$2',[device,sourceId])).rows[0].count,'1');
   const enrollGitHub = async (user, existingId) => {
     const db = await pool.connect();
     try {

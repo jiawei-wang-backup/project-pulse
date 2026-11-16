@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -254,6 +254,62 @@ export async function ingest(pool, token, raw, lan = null) {
   } finally { client.release(); }
 }
 
+// PR discovery belongs to the reporting client. Accept only structured PR
+// metadata, scoped to sessions already reported by this authenticated device.
+export async function ingestPulls(pool,token,raw,lan=null) {
+  if (!token && !lan) fail(401,'invalid_device');
+  let report;try {report=JSON.parse(raw)} catch {fail(400,'invalid_json')}
+  if (!report || Object.keys(report).sort().join(' ')!=='batch_id pulls schema_version sent_at' ||
+      report.schema_version!==1 || !uuid.test(report.batch_id) || !Array.isArray(report.pulls) ||
+      report.pulls.length<1 || report.pulls.length>50 || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(report.sent_at) ||
+      !Number.isFinite(Date.parse(report.sent_at))) fail(422,'invalid_pr_batch');
+  for (const p of report.pulls) {
+    if (!p || Object.keys(p).sort().join(' ')!=='created_at github_id is_draft number repository source_session_id state title updated_at url' ||
+        !uuid.test(p.source_session_id) || typeof p.repository!=='string' || !/^[\w.-]+\/[\w.-]+$/.test(p.repository) || p.repository.length>120 ||
+        !Number.isSafeInteger(p.github_id) || p.github_id<1 || !Number.isSafeInteger(p.number) || p.number<1 ||
+        typeof p.title!=='string' || !p.title.trim() || [...p.title].length>500 || /[\x00-\x1f]/.test(p.title) ||
+        p.url!==`https://github.com/${p.repository}/pull/${p.number}` || !['open','closed','merged'].includes(p.state) || typeof p.is_draft!=='boolean' ||
+        ['created_at','updated_at'].some(k=>typeof p[k]!=='string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(p[k]) || !Number.isFinite(Date.parse(p[k]))) ||
+        Date.parse(p.updated_at)<Date.parse(p.created_at)) fail(422,'invalid_pr_record');
+  }
+  const db=await pool.connect();
+  try {
+    await db.query('BEGIN');
+    const auth=await db.query('SELECT device_id FROM devices WHERE credential_digest=$1 AND revoked_at IS NULL FOR UPDATE',[digest(lan?.credential??token)]);
+    if(!auth.rowCount) fail(401,'invalid_device');
+    const device=auth.rows[0].device_id;
+    const existing=await db.query('SELECT request_digest FROM ingest_batches WHERE device_id=$1 AND batch_id=$2',[device,report.batch_id]);
+    if(existing.rowCount) {
+      if(!digest(raw).equals(existing.rows[0].request_digest)) fail(409,'batch_conflict');
+    } else {
+      for(const p of report.pulls) {
+        const source=await db.query('SELECT repository_id FROM sessions WHERE device_id=$1 AND session_id=$2',[device,p.source_session_id]);
+        if(!source.rowCount) fail(422,'pr_session_missing');
+        const repo=await db.query(`INSERT INTO repositories(repository_id,github_host,github_id,full_name) VALUES ($1,'github.com',$2,$3)
+          ON CONFLICT(github_host,github_id) DO UPDATE SET full_name=EXCLUDED.full_name RETURNING repository_id`,[randomUUID(),p.github_id,p.repository]);
+        if(source.rows[0].repository_id && source.rows[0].repository_id!==repo.rows[0].repository_id) fail(409,'project_repository_conflict');
+        // Keep other sessions untouched. The client's checked session->repo
+        // relation is part of this PR submission and belongs to this device.
+        await db.query('UPDATE sessions SET repository_id=$3 WHERE device_id=$1 AND session_id=$2',[device,p.source_session_id,repo.rows[0].repository_id]);
+        await db.query('UPDATE project_reports SET project_key=$3 WHERE device_id=$1 AND source_session_id=$2',[device,p.source_session_id,p.repository]);
+        await db.query(`INSERT INTO pull_requests(repository_id,number,title,url,state,is_draft,created_at,updated_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(repository_id,number) DO UPDATE SET
+          title=EXCLUDED.title,url=EXCLUDED.url,state=EXCLUDED.state,is_draft=EXCLUDED.is_draft,updated_at=EXCLUDED.updated_at
+          WHERE pull_requests.updated_at<=EXCLUDED.updated_at`,[repo.rows[0].repository_id,p.number,p.title,p.url,p.state,p.is_draft,p.created_at,p.updated_at]);
+      }
+      await db.query('INSERT INTO ingest_batches(device_id,batch_id,request_digest,schema_version,collector_version,sent_at) VALUES ($1,$2,$3,1,\'3.0.0\',$4)',
+        [device,report.batch_id,digest(raw),report.sent_at]);
+    }
+    await db.query('UPDATE devices SET last_seen_at=now() WHERE device_id=$1',[device]);
+    await db.query('COMMIT');return {batch_id:report.batch_id,status:'committed',pulls:report.pulls.length};
+  } catch(error) {
+    await db.query('ROLLBACK');
+    if(error.code==='23505') fail(409,'repository_identity_conflict');
+    if(['23503','23514','22P02','22001','22008'].includes(error.code)) fail(422,'invalid_pr_record');
+    throw error;
+  } finally {db.release()}
+}
+
 export function dashboardCutoff(days, now = Date.now()) {
   // Shift UTC onto Singapore's calendar, then convert its midnight back to UTC.
   const day = 86_400_000;
@@ -385,7 +441,7 @@ async function reportDirectory(pool, lan) {
   ]);
   if (current.rows[0]?.revoked_at) fail(401,'invalid_device');
   return {protocol_version:3, recommended_collector_version:'3.0.0',
-    capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill'],sources:sources.rows,
+    capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill','client_pr_ingest'],sources:sources.rows,
     members:members.rows,repositories:repositories.rows,
     current_display_name:current.rows[0]?.display_name ?? null};
 }
@@ -402,7 +458,7 @@ export function createApi({localView = false, lanEnrollment = false} = {}) {
       try {
         const deviceKey = req.headers['x-pulse-lan-device'];
         const lan = lanEnrollment && !req.headers.authorization && deviceKey !== undefined ? lanIdentity(deviceKey,req.headers['x-pulse-lan-label'],req.headers['x-pulse-lan-github']) : null;
-        if (req.method==='POST' && url.pathname==='/api/v1/reports') {
+        if (req.method==='POST' && ['/api/v1/reports','/api/v1/report-pulls'].includes(url.pathname)) {
           if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) fail(415,'invalid_content_type');
           const chunks = [];
           let length = 0;
@@ -411,7 +467,7 @@ export function createApi({localView = false, lanEnrollment = false} = {}) {
             if (length > 256 * 1024) { res.writeHead(413).end(); return; }
             chunks.push(chunk);
           }
-          data = await ingest(pool,token,Buffer.concat(chunks),lan);
+          data = await (url.pathname==='/api/v1/report-pulls' ? ingestPulls : ingest)(pool,token,Buffer.concat(chunks),lan);
         } else if (req.method==='GET' && url.pathname==='/api/v1/report-directory' && lanEnrollment) {
           if (!lan) fail(401,'invalid_lan_device');
           data = await reportDirectory(pool,lan);

@@ -126,6 +126,16 @@ if ($action eq 'Submit') {
     my $plan = read_json($plan_file);
     $label //= $plan->{label};
     $github_login //= $plan->{github_login};
+    my $pulls=-f "$work/pulls.json" ? read_json("$work/pulls.json") : [];
+    die "pulls.json must be an array of at most 50 checked PR records\n" unless ref($pulls) eq 'ARRAY' && @$pulls<=50;
+    if (@$pulls || -f "$work/pr-request.json") {
+        my $pending_file="$state_dir/.pulse-state-".substr(sha256_hex($server),0,12).'.json';
+        my $state=-f $pending_file ? read_json($pending_file) : {report_from=>now(time()-7*86400),next_index=>0};
+        die "Finish the previous pending report first\n" if $state->{pending_work} && $state->{pending_work} ne $work && -f "$state->{pending_work}/plan.json";
+        $state->{pending_work}=$work;
+        make_path($state_dir,{mode=>0700}) unless -d $state_dir;
+        write_json("$pending_file.tmp",$state);rename "$pending_file.tmp",$pending_file or die "Cannot persist PR retry state\n";
+    }
     my %edits;
     if (-f "$work/summaries.json") {
         for my $edit (@{read_json("$work/summaries.json")}) {
@@ -167,7 +177,18 @@ if ($action eq 'Submit') {
         push @receipts,{batch_id=>$batch->{batch_id},usage=>$receipt->{usage}};
         $sent++;
     }
-    print $json->encode({submitted_batches=>$sent,server_cursor_already_advanced=>$advanced,
+    my $pr_receipt;
+    if (@$pulls || -f "$work/pr-request.json") {
+        my $directory=request('/api/v1/report-directory');
+        die "Server upgrade required: client_pr_ingest\n" unless grep {$_ eq 'client_pr_ingest'} @{$directory->{capabilities}//[]};
+        my $body="$work/pr-request.json";
+        write_json($body,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),pulls=>$pulls}) unless -f $body;
+        my $expected=read_json($body);
+        $pr_receipt=request('/api/v1/report-pulls',$body);
+        die "Unexpected PR receipt\n" unless $pr_receipt->{status} eq 'committed' &&
+            $pr_receipt->{batch_id} eq $expected->{batch_id} && $pr_receipt->{pulls}==@{$expected->{pulls}};
+    }
+    print $json->encode({submitted_batches=>$sent,server_cursor_already_advanced=>$advanced,pr_receipt=>$pr_receipt,
         receipts=>\@receipts,usage_verified=>($advanced ? JSON::PP::false : JSON::PP::true),
         bytes_read=>$plan->{bytes_read},backlog=>$plan->{backlog}}),"\n";
     exit;
@@ -214,7 +235,7 @@ sub resolve_project {
     return undef;
 }
 if ($scan_state->{pending_work} && -f "$scan_state->{pending_work}/plan.json") {
-    open my $resume,'-|',$^X,$0,'--action','Submit','--work-dir',$scan_state->{pending_work},'--server',$server
+    open my $resume,'-|',$^X,$0,'--action','Submit','--work-dir',$scan_state->{pending_work},'--server',$server,'--state-dir',$state_dir
         or die "Cannot resume pending upload\n";
     my $recovery=do {local $/; <$resume>};
     close $resume or die "Pending upload failed; retained at $scan_state->{pending_work}\n";

@@ -22,11 +22,21 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
   let activeHome=join(root,'codex');
   const cursors=new Map(); let committed=0; let rejectNext=false; let corruptReceipt=false;
   const totals={input_tokens:0,cached_input_tokens:0,output_tokens:0};
+  const prBatches=new Map();
   const server=http.createServer(async(req,res)=>{
     const url=new URL(req.url,'http://local');
     let result;
-    if(url.pathname==='/api/v1/report-directory') result={protocol_version:3,capabilities:['project_mapping_backfill'],members:[],repositories:[],sources:[...cursors].map(([source_id,c])=>({source_id,offset:c.offset}))};
+    if(url.pathname==='/api/v1/report-directory') result={protocol_version:3,capabilities:['project_mapping_backfill','client_pr_ingest'],members:[],repositories:[],sources:[...cursors].map(([source_id,c])=>({source_id,offset:c.offset}))};
     else if(url.pathname==='/api/v1/report-cursor') result=cursors.get(url.searchParams.get('source_id')) ?? {offset:0,context:{},repositories:[]};
+    else if(req.method==='POST' && url.pathname==='/api/v1/report-pulls') {
+      const chunks=[];for await(const chunk of req) chunks.push(chunk);
+      const body=JSON.parse(Buffer.concat(chunks));
+      if(rejectNext){rejectNext=false;res.writeHead(503).end();return;}
+      for(const p of body.pulls) assert.ok(cursors.has(p.source_session_id));
+      if(prBatches.has(body.batch_id)) assert.deepEqual(prBatches.get(body.batch_id),body);
+      prBatches.set(body.batch_id,body);
+      result={status:'committed',batch_id:body.batch_id,pulls:body.pulls.length};
+    }
     else if(req.method==='POST') {
       const chunks=[]; for await(const chunk of req) chunks.push(chunk);
       const body=JSON.parse(Buffer.concat(chunks));
@@ -155,6 +165,18 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
     assert.ok(mappingPlan.batches.some(b=>b.mappings?.some(m=>m.session_id===source && m.repository==='example/moved')));
     await invoke('Submit',mappingWork);
     assert.equal(cursors.get(source).project_key,'example/moved');
+    // Checked PR metadata can be uploaded without new log bytes and resumes
+    // after failure, using an immutable request separate from token batches.
+    await rm(repoDir,{recursive:true,force:true});
+    const prWork=join(root,'pr-work');await invoke('Prepare',prWork);
+    const pr={source_session_id:source,repository:'example/moved',github_id:43,number:7,
+      title:'Verified client PR',url:'https://github.com/example/moved/pull/7',state:'merged',is_draft:false,created_at:at,updated_at:at};
+    await writeFile(join(prWork,'pulls.json'),JSON.stringify([pr]));
+    rejectNext=true;await assert.rejects(invoke('Submit',prWork));
+    await invoke('Prepare',join(root,'pr-recovery'));
+    const prResult=await invoke('Submit',prWork);
+    assert.equal(prResult.pr_receipt.pulls,1);
+    assert.equal(prBatches.size,1);
     assert.equal(cursors.get(source).offset,oldOffset);
     assert.deepEqual(totals,before);
     // Saved, verified remote still works if neither old nor new directory exists.
