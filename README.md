@@ -1,63 +1,74 @@
 # Project Pulse
 
-团队开发活动看板。每30分钟由开发者机器上的Codex主动识别授权会话、项目、GitHub仓库和PR、模型与Token，生成脱敏摘要及里程碑，通过固定脚本增量提交并核验回执。服务端负责校验、存储和展示；原GitHub PR抓取脚本保留为管理员可选补同步，不代替客户端识别。缺少信息时先自行查找，仍无法确认才向用户询问。
+团队开发活动看板。每位成员电脑上的 Codex 识别项目、会话、GitHub PR、模型和真实 Token 用量，整理脱敏摘要、项目目标与里程碑，每 30 分钟增量同步到服务端。
 
-## 本地预览
+客户端先自行查找和核验，仍缺信息或证据冲突时才询问用户。固定脚本负责解析、差分、续传和提交，服务端校验、去重、存储与展示。
 
-看板服务需要 Node.js 24+。运行 `npm ci` 和 `npm start`。未配置数据库时，打开 http://127.0.0.1:4174 可浏览演示版。
+## 下载上报包
 
-## 启用 PostgreSQL
+**[下载最新 ZIP：project-pulse-report-latest.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/latest/download/project-pulse-report-latest.zip)**
 
-1. 创建空数据库。用数据库管理凭证执行 `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/001_init.sql -f db/002_session_title.sql -f db/003_session_display_title.sql -f db/004_session_workspace.sql -f db/005_project_reports.sql -f db/006_report_cursors.sql -f db/007_github_identities.sql`。已有数据库只需执行尚未应用的迁移。
-2. 设置 `DATABASE_URL` 并运行 `npm start`。默认监听本机。团队部署时通过 HTTPS 反向代理暴露服务，数据库留在内网。看板读取接口无需登录；设备上报默认仍使用每台设备独立的采集凭证。可信局域网部署可设置 `PULSE_LAN_ENROLLMENT=1`，让完整看板同时接受局域网设备哈希上报。
-3. 管理员核对 GitHub 用户名后，在服务端为每台设备执行 `node db/admin.mjs enroll-github USERNAME`。同一个 GitHub 数字用户 ID 自动复用成员 UUID，每台电脑仍得到独立设备令牌。已有成员首次绑定时执行 `node db/admin.mjs enroll-github USERNAME <developer_uuid>`，已有设备和历史记录继续归属于该成员。不使用 GitHub 时仍可执行 `node db/admin.mjs enroll "姓名" [developer_uuid]`。只将新令牌发给对应成员。撤销单台设备可执行 `node db/admin.mjs revoke <device_uuid>`。
-4. 执行 `node db/admin.mjs repo owner/repo "业务分类"` 登记项目。私有仓库需在服务端配置拥有仓库及 PR 读取权限的 `PULSE_GITHUB_TOKEN`。用系统调度每 30 分钟运行 `npm run sync:prs`，也可手动触发。
+[发布记录](https://github.com/jiawei-wang-dev/project-pulse/releases) · [详细上报流程](ops/report/README.md) · [升级与验收说明](ops/report/UPGRADE.md)
 
-## 配置开发者设备
+同一个 ZIP 包含 macOS、Windows、Linux 脚本，完整提示词、协议、升级说明和逐文件 SHA-256 校验和。成员电脑只需要上报包，不需要克隆完整项目、安装数据库或启动服务端。当前局域网快速流程无需手填设备令牌或创建 `~/.project-pulse/config.json`。
 
-macOS 和 Windows 可使用 [固定脚本和快速试报说明](ops/report/README.md) 处理 Codex 增量。可信局域网试点也可分发 [单文件上报说明书](docs/lan-report.md)。管理员运行 `./ops/local.sh serve-lan <本机私有 IPv4>`，分发前将说明书里的服务地址改为实际局域网地址。此入口免设备令牌，HTTP 明文传输，供同一可信局域网内试跑。
+## 拿到 ZIP 后怎么用
 
-当前便携上报包为3.0.0，局域网快速流程无需客户端 config.json 或设备令牌（下文配置仅用于独立令牌模式）。服务端须先更新代码并重启，以提供协议3的目录及精确计量回执。用 `sh ops/report/build-package.sh <绝对路径.zip>` 构建包含 VERSION、校验和、升级说明、macOS/Windows脚本的自包含包。客户端覆盖更新原永久目录时保留隐藏状态和待续传目录。具体见 [升级及验收说明](ops/report/UPGRADE.md)。GitHub PR定时同步由服务端独立负责。
+1. 解压到长期保留的目录，例如 `Documents/project-pulse-report`。不要在 ZIP 预览或临时目录里运行。
+2. 用这台电脑上的 Codex 打开解压后的 `project-pulse-report` 文件夹。
+3. 复制下面整段提示词发送给 Codex。它会先试报，再创建或更新每 30 分钟同步任务。
 
-复制整个 [Project Pulse 上报包](.agents/skills/project-pulse-report) 到另一台电脑，按 [试报说明](.agents/skills/project-pulse-report/SETUP.md) 配置。Codex 和 Claude Code 可以作为日志来源，也可以作为执行上报的工具。其他工具需有本机访问能力和已验证的日志格式映射。
+```text
+PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，执行完整上报与定时同步流程。
 
-macOS 和 Windows 客户端都使用已有的 Codex 和系统命令。由看板管理员发放设备令牌。用文本编辑器在当前用户目录下创建 `.project-pulse/config.json`，文件名以 `.json` 结尾。
+我授权你识别本机 Codex 主会话及相关项目、成员、GitHub仓库和PR、模型与真实Token用量，并生成脱敏摘要、项目目标和里程碑。先主动查找并复用已有信息，仍缺信息或证据冲突时，再集中询问我。排除当前上报会话，不编造数据。
 
-```json
-{
-  "server_url": "http://192.168.16.70:4185",
-  "device_token": "替换成管理员发放的设备令牌",
-  "sources": ["codex"],
-  "allow_lan_http": true
-}
+使用包内对应系统的固定脚本，向 http://192.168.16.70:4185 增量上报。PR也要按README查证并结构化提交，分别核对日志、Token和PR回执。
+
+试报成功后，必须使用定时任务工具，创建或更新并启用「Project Pulse 每30分钟上报」，每30分钟在当前永久解压目录执行完整识别与增量同步。已有同用途任务就更新，避免重复；设置后重新查询确认启用状态、间隔和目录。无需再次询问是否设置。
+
+最后报告实际识别及提交结果、Token与PR核验结果、积压和缺失信息，以及任务标识、启用状态和计划规则。无法上报或无法设置任务时明确说明失败步骤和原因，不得宣称全部完成。
 ```
 
-- **macOS**：运行 `mkdir -p ~/.project-pulse && chmod 700 ~/.project-pulse` 创建配置目录。保存配置后运行 `chmod 600 ~/.project-pulse/config.json`。Codex 用 `curl` 上报。
-- **Windows**：在 PowerShell 中运行 `New-Item -ItemType Directory -Force -Path (Join-Path $HOME '.project-pulse') | Out-Null` 创建目录。配置放在个人用户目录下并使用 UTF-8 保存。Codex 用 Windows PowerShell 和系统的 `curl.exe` 上报，无需安装 WSL 或额外运行时。
+当前服务端是 `http://192.168.16.70:4185`，客户端必须能访问它。客户端自己的 IP 不是服务端地址，不要替换。私有仓库与 PR 使用本机已授权的 GitHub 只读工具；权限不足时由 Codex 说明缺少什么，不把凭证发进聊天。
 
-团队其他电脑填实际部署的 HTTPS 地址。设备令牌可绑定到已有成员，同一人的多台电脑各用一个令牌。
+## 同步哪些数据
 
-在 Codex 桌面端为项目目录配置一个每 **30 分钟**运行的本机计划任务，任务内容填「PROJECT_PULSE_AUTOMATION。读取并执行 prompts/report.md。只上报授权的会话。」可先发同一句话手动试跑。运行环境须能读取授权日志并访问配置中的服务端。具体界面与运行条件见 [OpenAI 的计划任务文档](https://learn.chatgpt.com/docs/automations?surface=app)。
+| 数据 | 客户端 Codex 的工作 |
+| --- | --- |
+| 成员与设备 | 核对团队目录和已确认身份；换 Codex 账号不自动变更团队成员 |
+| 项目与目录 | 核对 Git remote，结合会话、README 和近期提交识别同名目录及迁移关系 |
+| 会话与摘要 | 使用原生会话 ID，排除当前上报会话，复用历史摘要，只总结新增成果 |
+| 模型与 Token | 从日志解析模型、输入、缓存输入、输出 Token，按游标计算差分，不估算或重复累计 |
+| GitHub PR | 查证仓库数字 ID、PR 编号、状态和时间，结构化提交并核对独立回执 |
+| 目标与里程碑 | 依据证据总结目标、已完成及未完成交付项，不编造进度 |
+| 30 分钟任务 | 试报成功后必须设置，再查询确认启用状态、间隔和工作目录 |
 
-Codex 从 PostgreSQL 读取上次提交的位置，用 curl 发送结构化报告。数据库在同一事务里保存报告和游标。断网后下次从已确认位置继续；请求已提交但回执丢失时，可以重新查询游标。
+日志提交核对 `committed`、`usage_verified`，PR 提交核对 `pr_receipt`。无新增、缺少记录、权限不足、解析失败和仍有积压必须分别说明；面板没有 PR 不等于 GitHub 没有 PR。只有查到任务存在才能说“已设置”，实际自动触发成功后才能说“自动运行已验证”。
 
-从旧版客户端切换时，先停止旧任务并清空待发批次，在配置里加 `"report_from": "切换时刻的 UTC 时间"`，以免历史 Token 重复累计。新设备令牌可绑定原成员 UUID。旧客户端使用不同的会话标识，历史会话仍作为独立记录保留。旧版 Node.js 客户端保留用于兼容和测试。
+## 支持的系统
 
-## 验证与当前范围
+| 系统 | 入口 | 系统依赖 |
+| --- | --- | --- |
+| macOS | `pulse-report.pl` | Perl、curl |
+| Windows | `pulse-report.ps1` | Windows PowerShell、curl.exe |
+| Linux | `pulse-report-linux.sh` | Perl（含 JSON::PP、Digest::SHA）、curl |
 
-- `npm test` 运行原型及领域测试。
-- 在临时空库执行迁移后，设置该库的 `DATABASE_URL` 并执行 `npm run test:integration`。测试会写入合成数据，请用可丢弃的数据库。
-- Codex 直报限制每轮日志数量和读取字节数。真实开发机的开销与长时间断网恢复仍需试点实测。
-- 旧版客户端的 Codex 和 Claude Code 适配使用合成会话做了端到端验证。上报包提供 Codex 和 Claude Code 日志适配。Claude Code 直报尚未在真实设备上验证。Codex 子 Agent 采集范围见本机试点章节。GitHub 同步首轮读取每个仓库最新的 100 条 PR，之后按更新增量同步。
-- PostgreSQL 模式的根地址使用正式工作台样式展示真实数据，包含项目目标、里程碑、人员、模型、会话摘要和按项目分组的 PR。尚无项目报告时仍显示里程碑空状态。未配置数据库时，根地址仍展示演示原型。旧版简化看板保留在 `/assets/live.html`，便于排查接口数据。
+执行工具需要能读取本地文件、运行命令并连接服务端。定时功能由实际执行工具提供；没有该能力时必须明确报告“未设置”，不能把脚本能运行当作定时任务已启用。
 
-[技术方案和协议](技术方案.md) · [数据库迁移](db/001_init.sql)
+## 更新已有客户端
 
-## 本机试点
+下载新 ZIP，覆盖原永久解压目录，保留 `.pulse-state-*.json`、`.pulse-project-paths.json`、`.pulse-pending/`，再发送上面的提示词。更新原任务的正文并重新核验，不重复创建。待发请求先恢复，不清空游标或重新导入历史 Token。
 
-安装依赖后执行 `./ops/local.sh serve`，访问 http://127.0.0.1:4185。通过这个脚本启动的看板在本机直接打开即可。PostgreSQL 数据保存在 Docker 命名卷中，数据库端口仅绑定回环地址。
+当前包使用协议 3。真正服务端需提供 `usage_receipt`、`project_mapping_backfill`、`client_pr_ingest` 能力，旧部署应先拉取最新代码并按原方式重启。更新 ZIP 不会自动更新另一台电脑的服务端或已存在的定时任务。
 
-- `./ops/local.sh admin enroll-github USERNAME [developer_uuid]` 按 GitHub 账号发放设备令牌。此操作由管理员执行，成员无需在看板或客户端登录 GitHub。
-- `./ops/local.sh sync` 执行一次 PR 同步。部署时可将 `ops/local-sync.sh` 每 30 分钟加入本机调度，并收集 stderr。私有仓库同步需要在任务环境加载 GitHub 读取凭证。
-- `./ops/local.sh backup` 生成 PostgreSQL 自定义格式备份。恢复演练时先创建空库，再用 `pg_restore --exit-on-error --dbname <空库连接串> <备份文件>` 恢复，核对设备、会话和 PR 记录。
-- Codex 子 Agent 在日志提供父线程 ID 且本机能解析父链时归到根会话。子线程累计 Token 暂不进入汇总，因为日志可能包含继承的历史计数。Claude Code 子 Agent 暂未接入。
+## 服务端与开发
+
+以下只在真正服务端或开发环境执行，成员上报电脑无需执行。
+
+- Node.js 24+，运行 `npm ci` 和 `npm start`；未配置数据库时默认在 `http://127.0.0.1:4174` 展示演示数据。
+- 真实数据使用 PostgreSQL；迁移、局域网部署、备份及独立令牌模式见 [服务端部署说明](docs/deployment.md)。
+- `npm test` 运行测试；在可丢弃的已迁移数据库设置 `DATABASE_URL` 后运行 `npm run test:integration`。便携采集器 CI 覆盖 macOS、Windows 和 Ubuntu。
+- 构建上报包：`sh ops/report/build-package.sh /绝对路径/project-pulse-report-latest.zip`。包内不包含本机状态、路径映射、日志或凭证。
+
+[技术方案](技术方案.md) · [上报详细流程](ops/report/README.md) · [手动协议及其他来源适配](docs/lan-report.md)
