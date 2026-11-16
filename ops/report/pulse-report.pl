@@ -61,7 +61,7 @@ sub request {
 sub cursor { request("/api/v1/report-cursor?source_id=$_[0]") }
 sub narrative {
     my $text = $_[0] // '';
-    $text =~ s{\x60\x60\x60.*?(?:\x60\x60\x60|\z)|https?://\S+|\S+\@\S+|(?:^|\s)[~/]\S+|\b\S*(?:token|secret|password|api[_-]?key)\S*\s*[:=]\s*\S+}{ [redacted] }gis;
+    $text =~ s{\x60\x60\x60.*?(?:\x60\x60\x60|\z)|https?://\S+|\S+\@\S+|(?:^|\s)[~/]\S+|(?:\b\S*(?:token|secret|password|api[_-]?key)\S*|\S{0,8}(?:\x{5bc6}\x{7801}|\x{53e3}\x{4ee4}|\x{4ee4}\x{724c}))\s*[:=\x{ff1a}]\s*\S+}{ [redacted] }gis;
     $text =~ s/\s+/ /g;
     return substr($text,0,240);
 }
@@ -139,7 +139,10 @@ for my $entry (@files) {
     open my $fh,'<:raw',$entry->[0] or do { $skips{$checked}='cannot_open'; next };
     my $size = -s $fh;
     my $head = '';
-    $bytes += read($fh,$head,min(16384,1048576-$bytes)) // 0;
+    # Recent Codex builds can emit a session_meta line larger than 16 KiB
+    # because it includes the resolved instruction set. Keep the read bounded,
+    # but large enough to decode that first JSONL record in the fast path.
+    $bytes += read($fh,$head,min(65536,1048576-$bytes)) // 0;
     my ($first) = $head =~ /\A([^\n]+)\n/;
     my $meta = eval { $json->decode($first // '') };
     if (!$meta || $meta->{type} ne 'session_meta') { $skips{$checked}='no_session_metadata'; next }

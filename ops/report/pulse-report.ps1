@@ -117,7 +117,10 @@ foreach ($file in $files) {
     $checked++
     $stream = [IO.File]::Open($file.FullName,'Open','Read','ReadWrite')
     try {
-        $head = New-Object byte[] ([Math]::Min(16384, [Math]::Min($stream.Length,1048576-$bytesRead)))
+        # Recent Codex builds can emit a session_meta line larger than 16 KiB
+        # because it includes the resolved instruction set. Keep this bounded,
+        # while allowing the first JSONL record to be decoded reliably.
+        $head = New-Object byte[] ([Math]::Min(65536, [Math]::Min($stream.Length,1048576-$bytesRead)))
         $n = $stream.Read($head,0,$head.Length)
         $bytesRead += $n
         if ($n -eq 0) { continue }
@@ -165,7 +168,7 @@ foreach ($file in $files) {
                 'task_complete' {
                     if ($recent) {
                         $activity=$row.timestamp; $state='completed'
-                        $note = if ($IncludeEvidence) { ([string]$p.last_agent_message -replace '(?s)```.*?(```|$)|https?://\S+|\S+@\S+|[A-Za-z]:[\\/]\S+|(?:^|\s)/\S+|\b\S*(?:token|secret|password|api[_-]?key)\S*\s*[:=]\s*\S+',' [redacted] ') -replace '\s+',' ' } else { '' }
+                        $note = if ($IncludeEvidence) { ([string]$p.last_agent_message -replace '(?s)```.*?(```|$)|https?://\S+|\S+@\S+|[A-Za-z]:[\\/]\S+|(?:^|\s)/\S+|(?:\b\S*(?:token|secret|password|api[_-]?key)\S*|\S{0,8}(?:密码|口令|令牌))\s*[:=\uff1a]\s*\S+',' [redacted] ') -replace '\s+',' ' } else { '' }
                         if ($IncludeEvidence -and $note.Trim()) { $notes = @($notes + $note.Substring(0,[Math]::Min(240,$note.Length)) | Select-Object -Last 2) }
                     }
                 }
