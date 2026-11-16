@@ -79,6 +79,14 @@ try {
   assert.equal(data.models.find(row=>row.model==='codex-fixture').input_tokens,'10');
   assert.equal(data.models.find(row=>row.model==='claude-fixture').input_tokens,'7');
   const heartbeat={schema_version:1,batch_id:randomUUID(),sent_at:at,collector_version:'1.0.0',sessions:[],agents:[],summaries:[],usage:[]};
+  const caseVariant={...heartbeat,batch_id:randomUUID(),projects:[{
+    report_id:randomUUID(),source_session_id:source.session_id,project_key:'EXAMPLE/PULSE',
+    goal:'验证仓库键大小写归一化',milestones:[{title:'合并项目键',state:'completed',evidence:'大小写变体已归入登记仓库'}],
+    observed_at:at,summarizer_tool:'claude_code',prompt_version:'2.0.0'
+  }]};
+  await ingest(pool,token,Buffer.from(JSON.stringify(caseVariant)));
+  const canonicalData=await (await fetch(base+'/api/v1/dashboard')).json();
+  assert.deepEqual(canonicalData.project_reports.map(row=>row.project_key),['example/pulse']);
   const raw=Buffer.from(JSON.stringify(heartbeat));
   await Promise.all([ingest(pool,token,raw),ingest(pool,token,raw)]);
   await assert.rejects(ingest(pool,token,Buffer.from(JSON.stringify({...heartbeat,collector_version:'1.0.1'}))),{status:409});

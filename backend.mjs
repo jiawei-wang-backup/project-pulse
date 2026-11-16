@@ -221,14 +221,20 @@ export async function ingest(pool, token, raw, lan = null) {
         if (cycle.rowCount) fail(422,'agent_cycle');
       }
       for (const row of report.summaries) await upsert(client,'session_summaries',['device_id','summary_id'],{device_id,...row});
-      for (const row of report.projects || []) await upsert(client,'project_reports',['device_id','report_id'],{device_id,...row,milestones:JSON.stringify(row.milestones)});
+      for (const row of report.projects || []) {
+        const repo=await client.query("SELECT full_name FROM repositories WHERE lower(github_host)='github.com' AND lower(full_name)=lower($1)",[row.project_key]);
+        await upsert(client,'project_reports',['device_id','report_id'],{
+          device_id,...row,project_key:repo.rows[0]?.full_name ?? row.project_key,milestones:JSON.stringify(row.milestones)
+        });
+      }
       for (const row of report.usage) await upsert(client,'usage_events',['device_id','event_id'],{device_id,...row});
       for (const row of report.mappings || []) {
-        const repo=await client.query("SELECT repository_id FROM repositories WHERE lower(github_host)='github.com' AND lower(full_name)=lower($1)",[row.repository]);
+        const repo=await client.query("SELECT repository_id,full_name FROM repositories WHERE lower(github_host)='github.com' AND lower(full_name)=lower($1)",[row.repository]);
         const changed=await client.query('UPDATE sessions SET repository_id=$3,workspace_name=$4 WHERE device_id=$1 AND session_id=$2 RETURNING 1',
           [device_id,row.session_id,repo.rows[0]?.repository_id ?? null,row.repository.toLowerCase()]);
         if (!changed.rowCount) fail(422,'mapping_session_missing');
-        await client.query('UPDATE project_reports SET project_key=$3 WHERE device_id=$1 AND source_session_id=$2',[device_id,row.session_id,row.repository.toLowerCase()]);
+        await client.query('UPDATE project_reports SET project_key=$3 WHERE device_id=$1 AND source_session_id=$2',
+          [device_id,row.session_id,repo.rows[0]?.full_name ?? row.repository.toLowerCase()]);
       }
       for (const {account_key,...row} of report.quota || []) {
         const {developer_id}=auth.rows[0];
@@ -358,8 +364,11 @@ export async function dashboard(pool, days) {
       sum(u.input_tokens) AS input_tokens,sum(u.output_tokens) AS output_tokens
       FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1
       GROUP BY day ORDER BY day`,[cutoff]],
-    [`SELECT DISTINCT ON (project_key) project_key,goal,milestones,observed_at,summarizer_tool
-      FROM project_reports ORDER BY project_key,observed_at DESC,report_id DESC`,[]],
+    [`SELECT DISTINCT ON (lower(p.project_key)) coalesce(r.full_name,p.project_key) AS project_key,
+        p.goal,p.milestones,p.observed_at,p.summarizer_tool
+      FROM project_reports p
+      LEFT JOIN repositories r ON lower(r.github_host)='github.com' AND lower(r.full_name)=lower(p.project_key)
+      ORDER BY lower(p.project_key),p.observed_at DESC,p.report_id DESC`,[]],
     [`SELECT coalesce(r.full_name,s.workspace_name) AS project_key,
       sum(coalesce(u.input_tokens,0)) AS input_tokens,sum(coalesce(u.output_tokens,0)) AS output_tokens
       FROM usage_events u JOIN sessions s ON s.device_id=u.device_id AND s.session_id=u.session_id
