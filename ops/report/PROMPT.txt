@@ -8,6 +8,8 @@ PROJECT_PULSE_AUTOMATION。
 
 读取当前已解压目录的 README.md，使用包内对应系统的固定脚本立即试报一次。只采集我授权的 Codex 主会话，排除当前这条上报会话，允许生成脱敏摘要、项目目标和已完成／未完成里程碑。不安装依赖，不编写新采集器，不输出日志原文、凭证或脱敏前的证据。
 
+Linux使用 `sh ./pulse-report-linux.sh`，macOS使用 `/usr/bin/perl ./pulse-report.pl`，Windows使用 `powershell.exe -NoProfile -File .\pulse-report.ps1`，Prepare／Submit参数按README执行。Linux的设备标识、增量游标、Token回执及目录发现与账号切换独立。Linux执行工具若没有定时任务功能，必须明确报告“整体未完成：定时任务未设置”及原因，不擅自安装服务或写入系统cron，也不声称脚本支持就等于自动任务已启用。
+
 允许脚本仅为这些授权会话只读查询其工作目录的 Git remote 来识别项目，使用 ResolveGit 选项。先查询团队目录，已知且由用户确认的 GitHub 账号使用 GitHubLogin 选项；不能按仓库拥有者或提交作者认定成员，无法确认时询问账号或姓名，无人值守时沿用已保存身份。工作目录使用本包 .pulse-pending 下的随机新子目录，失败保留以便下轮自动重试，不把状态文件放进临时目录，不清空已确认游标。
 
 Codex更新、换号或迁移后不能假定日志仍在旧目录。每轮使用脚本的有界目录发现：当前CODEX_HOME、当前用户默认目录、已确认的历史根目录以及Codex候选账号目录。不同目录里的同一原生会话ID沿用同一游标，不能按路径或当前Codex登录账号重新生成设备／会话标识；Codex订阅账号切换也不自动改变团队成员。核对diagnostics.session_roots_found和discovery_incomplete；根目录为0、没有可读日志、目录扫描未完成或source_header_changed_requires_confirmation时，先上报已确认数据，再明确反问“Codex是否更新／换号／迁移？请提供当前CODEX_HOME或会话sessions目录”，不得报告零消耗或全部同步完成。用户确认的新根目录用SessionRoot／--session-root传入Prepare并持久化；不搜索其他用户目录或读取登录凭证。

@@ -11,9 +11,9 @@ import {once} from 'node:events';
 
 const run=promisify(execFile);
 const host=Object.values(networkInterfaces()).flat().find(x=>x.family==='IPv4' && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(x.address))?.address;
-if (process.env.CI && !host && ['darwin','win32'].includes(process.platform)) throw new Error('No private test interface; portable collector verification cannot be skipped in CI.');
+if (process.env.CI && !host && ['darwin','win32','linux'].includes(process.platform)) throw new Error('No private test interface; portable collector verification cannot be skipped in CI.');
 test('portable collector: long metadata, baseline/reset, retry, stale backlog, exclusion, usage receipts',
-  {skip:!host || !['darwin','win32'].includes(process.platform)}, async()=>{
+  {skip:!host || !['darwin','win32','linux'].includes(process.platform)}, async()=>{
   const root=await mkdtemp(join(tmpdir(),'pulse-fast-test-'));
   const logs=join(root,'codex','sessions','2026','01','01');
   const state=join(root,'state');
@@ -52,7 +52,9 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
     const script=resolve('ops/report',windows?'pulse-report.ps1':'pulse-report.pl');
     const args=windows?['-NoProfile','-ExecutionPolicy','Bypass','-File',script,'-Action',action,'-WorkDir',work,'-StateDir',state,'-Server',origin]
       :[script,'--action',action,'--work-dir',work,'--state-dir',state,'--server',origin];
-    const output=await run(windows?'powershell.exe':'/usr/bin/perl',args,{env:{...process.env,CODEX_HOME:activeHome,
+    const command=windows?'powershell.exe':process.platform==='linux'?'/bin/sh':'/usr/bin/perl';
+    if(process.platform==='linux') args[0]=resolve('ops/report/pulse-report-linux.sh');
+    const output=await run(command,args,{env:{...process.env,CODEX_HOME:activeHome,
       HOME:join(root,'home'),USERPROFILE:join(root,'home'),APPDATA:join(root,'home','AppData','Roaming'),
       LOCALAPPDATA:join(root,'home','AppData','Local'),XDG_DATA_HOME:join(root,'home','.local','share')},maxBuffer:1024*1024});
     return JSON.parse(output.stdout);

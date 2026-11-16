@@ -1,4 +1,4 @@
-# Project Pulse macOS / Windows 快速上报包
+# Project Pulse macOS / Windows / Linux 快速上报包
 
 版本以 `VERSION` 为准（当前 3.0.0），需要服务端协议 3。先阅读 `UPGRADE.md`，升级时保留本目录的隐藏状态文件和待续传目录。包内 `SHA256SUMS` 可用于核对文件完整性。
 
@@ -8,7 +8,7 @@
 
 - 服务端固定为 `http://192.168.16.70:4185`。解压本包的电脑是客户端；不得用客户端自己的 IP 替换服务端地址，不得在客户端启动 Project Pulse 服务端。
 - 快速流程使用局域网设备指纹，不需要 `~/.project-pulse/config.json`，也不需要设备令牌。
-- macOS 使用系统 Perl 和 curl，Windows 使用系统 Windows PowerShell 和 curl.exe。其他机器必须能访问上述地址。
+- macOS／Linux 使用系统 Perl（含 JSON::PP、Digest::SHA）和 curl，Windows 使用系统 Windows PowerShell 和 curl.exe。其他机器必须能访问上述地址。Linux入口检查依赖，缺少时明确报告，不自动安装。
 - 客户端只上报会话、Token、摘要和里程碑。GitHub PR 同步由服务端的定时任务负责，客户端不执行 GitHub 同步。
 
 ## 试报流程
@@ -26,6 +26,14 @@ macOS 对应命令：
 /usr/bin/perl ./pulse-report.pl --action Prepare --work-dir "<尚不存在的待续传子目录>" --include-evidence --resolve-git
 ```
 
+Linux对应命令（其余参数与macOS相同）：
+
+```sh
+sh ./pulse-report-linux.sh --action Prepare --work-dir "<尚不存在的待续传子目录>" --include-evidence --resolve-git
+```
+
+Linux设备标识为 `/etc/machine-id`（或DBus machine-id）与UID的哈希，和Codex登录账号、IP无关。缺少有效machine-id时，在 `${XDG_STATE_HOME:-$HOME/.local/state}/project-pulse/device-id` 首次生成并保存随机标识；以后复用，不要把该文件分发给其他电脑。克隆系统须使用各自独立的machine-id。原始机器标识不会上传。
+
 3. 根据 Prepare 返回的 `evidence`，仅为有新成果、验证结果或阻塞的会话写 `summary`。项目报告缺失或有新进展时写 `goal` 和 `milestones`。结合已有项目报告，证据不足时写具体待验证项。内容仅限有依据的短句，禁止复制原日志、代码、完整路径、凭证或链接。同项目每轮至多提交一份。在临时目录以 UTF-8 保存数组 `summaries.json`，例如：
 
 ```json
@@ -42,6 +50,12 @@ macOS 对应命令：
 
 ```sh
 /usr/bin/perl ./pulse-report.pl --action Submit --work-dir "<同一个待续传子目录>"
+```
+
+Linux提交命令：
+
+```sh
+sh ./pulse-report-linux.sh --action Submit --work-dir "<同一个待续传子目录>"
 ```
 
 脚本单轮检查最多8个候选文件、最多读取1 MiB，并在约12秒扫描预算到达后暂停；请求最多等待4秒。首次采集起点为首次运行前7天，并持久化在本包状态及服务端游标上下文，之后不随日期滚动；已知来源即使修改时间过旧也继续追赶积压。轮转位置持久化，多次运行会继续轮转。无变化文件也计入检查预算，所以 `backlog` 是待检查／待读取提示，不是精确剩余字节数。
@@ -79,4 +93,5 @@ macOS 对应命令：
 - 先查找本机同目录、同上报用途的已有任务，更新并启用；没有才创建。任务名为「Project Pulse 每30分钟上报」，每 30 分钟执行一次，工作目录必须是解压后的永久目录，不得使用临时目录或 ZIP 路径。
 - 定时任务正文（创建时将“本包永久目录”替换为实际绝对目录）：`PROJECT_PULSE_AUTOMATION。读取本包永久目录中的 VERSION 和 README.md，按3.0.0流程执行一轮增量上报。当前电脑是客户端，服务端固定为 http://192.168.16.70:4185；不得改用本机IP或启动服务端。先恢复待发请求，再用固定脚本读取已授权的Codex主会话，排除当前上报会话，使用ResolveGit核对项目并沿用已确认的成员身份。上传模型和三类Token增量，即使没有新摘要也要提交用量。核对committed、usage_verified及diagnostics，区分无新增、解析失败、无法计量和积压。只在有实质进展或缺少项目报告时总结脱敏摘要、目标和里程碑。必须按README核对项目PR及各字段完整性；面板无PR记录不能当作GitHub没有PR。先提交已确认数据，再在任务结果列出项目、未识别字段和原因，并集中向用户反问所需仓库地址、PR链接／编号、账号或目标／里程碑依据，复用已有答案。执行结束分别报告回执、用量核验、积压和未识别项；不要重复创建任务。`
 - 创建或更新后必须重新查询任务，确认名称、已启用、30 分钟间隔和工作目录。未实际查到任务时不得声称「已设置」。当前工具无定时任务能力时，必须明确回报「未设置」及原因。
+- Linux也遵守相同规则：只有当前执行工具实际提供定时任务能力才可设置；只有CLI而没有该能力时，完成可执行的上报并明确报告“定时任务未设置”，不擅自安装服务或写入cron。
 - 只有试报成功且重新查询确认定时任务已启用，才可报告整体完成。最终给出任务标识、实际计划规则及下次运行时间（工具未提供则如实说明）。试报失败或定时任务工具缺失／报错时报告“整体未完成”，列出失败步骤和具体错误。

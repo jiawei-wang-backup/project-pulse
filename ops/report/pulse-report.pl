@@ -10,6 +10,7 @@ use Encode qw(encode_utf8);
 use FindBin;
 use File::Path qw(make_path);
 use Cwd qw(abs_path);
+use Fcntl qw(O_WRONLY O_CREAT O_EXCL);
 
 my ($state_dir,$github_login,$resolve_git) = ($FindBin::Bin,undef,0);
 my @session_roots;
@@ -27,13 +28,42 @@ die "Expected private IPv4 HTTP origin\n" unless $server =~ m{\Ahttp://((?:10\.|
 umask 0077;
 my $json = JSON::PP->new->utf8->canonical;
 my $uuid = qr/\A[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\z/i;
-my ($machine) = qx{/usr/sbin/ioreg -rd1 -c IOPlatformExpertDevice} =~ /"IOPlatformUUID"\s*=\s*"([^"]+)"/;
-die "Missing IOPlatformUUID\n" unless $machine;
+my $machine;
+if ($^O eq 'darwin') {
+    ($machine) = qx{/usr/sbin/ioreg -rd1 -c IOPlatformExpertDevice} =~ /"IOPlatformUUID"\s*=\s*"([^"]+)"/;
+    die "Missing IOPlatformUUID\n" unless $machine;
+} elsif ($^O eq 'linux') {
+    for my $path ('/etc/machine-id','/var/lib/dbus/machine-id') {
+        if (open my $fh,'<',$path) {
+            my $value=<$fh> // ''; close $fh; $value =~ s/\s+//g;
+            if ($value =~ /\A[0-9a-f]{32}\z/i && $value !~ /\A0+\z/) {$machine=lc $value;last}
+        }
+    }
+    # Minimal distributions may lack machine-id. Persist a random installation
+    # identity outside the distributable package, rather than using hostname/IP.
+    unless ($machine) {
+        my $base=($ENV{XDG_STATE_HOME} // "$ENV{HOME}/.local/state").'/project-pulse';
+        make_path($base,{mode=>0700}) unless -d $base;
+        my $path="$base/device-id";
+        if (sysopen my $new,$path,O_WRONLY|O_CREAT|O_EXCL,0600) {print {$new} uuid4(),"\n";close $new or die "Cannot save Linux device identity\n"}
+        open my $fh,'<',$path or die "Cannot read Linux device identity\n";
+        chomp($machine=<$fh> // ''); close $fh;
+        die "Invalid Linux device identity\n" unless $machine =~ $uuid;
+    }
+} else {die "Unsupported platform: $^O\n"}
 my $device = sha256_hex("$machine\n$<");
 my $plan_file = "$work/plan.json";
 my @counts = qw(input_tokens cached_input_tokens output_tokens);
 
 sub now { strftime('%Y-%m-%dT%H:%M:%SZ',gmtime($_[0] // time())) }
+sub uuid4 {
+    open my $fh,'<:raw','/dev/urandom' or die "Missing OS randomness\n";
+    my $raw=''; read($fh,$raw,16)==16 or die "Cannot read OS randomness\n";close $fh;
+    substr($raw,6,1)=chr((ord(substr($raw,6,1)) & 15) | 64);
+    substr($raw,8,1)=chr((ord(substr($raw,8,1)) & 63) | 128);
+    my $hex=unpack('H*',$raw);
+    return join '-',map {substr($hex,$_->[0],$_->[1])} [0,8],[8,4],[12,4],[16,4],[20,12];
+}
 sub id {
     my $value = sha256_hex(encode_utf8($_[0]));
     return join '-', map { substr($value,$_->[0],$_->[1]) } [0,8],[8,4],[12,4],[16,4],[20,12];
@@ -61,7 +91,8 @@ sub request {
         }
         push @args,'-H','Content-Type: application/json','--data-binary',"\@$body";
     }
-    open my $pipe,'-|','/usr/bin/curl',@args,"$server$route" or die "Cannot run curl\n";
+    my $curl=-x '/usr/bin/curl' ? '/usr/bin/curl' : 'curl';
+    open my $pipe,'-|',$curl,@args,"$server$route" or die "Cannot run curl\n";
     my $output = do { local $/; <$pipe> };
     close $pipe or die "Request failed: $route\n";
     return $json->decode($output);
@@ -158,7 +189,8 @@ if ($scan_state->{pending_work} && -f "$scan_state->{pending_work}/plan.json") {
 my %known=map {lc($_->{source_id})=>1} @{$directory->{sources}//[]};
 my @containers=grep {defined && length} ($ENV{CODEX_HOME},
     "$ENV{HOME}/.codex","$ENV{HOME}/.config/codex", "$ENV{HOME}/Library/Application Support/Codex",
-    defined $ENV{XDG_DATA_HOME} ? "$ENV{XDG_DATA_HOME}/codex" : undef,
+    ($ENV{XDG_DATA_HOME} // "$ENV{HOME}/.local/share").'/codex',
+    ($ENV{XDG_CONFIG_HOME} // "$ENV{HOME}/.config").'/codex',
     entries($ENV{HOME},qr/\A\.codex[-_].+\z/));
 my @discovered;
 my @queue=map {[$_,0]} @containers;
@@ -332,8 +364,7 @@ for my $entry (@files) {
                 previous_summary=>$cursor->{latest_summary},previous_project_report=>$cursor->{project_report}};
         }
     }
-    my $batch_id = lc qx{/usr/bin/uuidgen};
-    chomp $batch_id;
+    my $batch_id = uuid4();
     push @batches,{schema_version=>1,batch_id=>$batch_id,sent_at=>now(),collector_version=>'3.0.0',
         sessions=>\@sessions,agents=>\@agents,summaries=>[],projects=>[],usage=>\@usage,
         cursor=>{source_id=>$source,from_offset=>$from,to_offset=>$end,
