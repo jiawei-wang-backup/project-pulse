@@ -1,5 +1,5 @@
 import { icon } from './icons.js';
-import {researchProjectCount,memberProjectKeys,renderProjectDocuments,isRunningAgent} from './live-projects.js';
+import {researchProjectCount,memberProjectKeys,renderProjectDocuments,isRunningAgent,splitDeferredPanels,adaptiveColumnsClass} from './live-projects.js';
 
 const app = document.querySelector('#app');
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
@@ -296,6 +296,15 @@ function overview() {
   const projects = allProjects();
   const activeProjects = researchProjectCount(projects);
   const attention = projects.filter(project => project.status === 'blocked');
+  const agents = runningAgents();
+  const attentionSection = attentionPanel(attention);
+  const agentSection = section(`${icon('bot')}AI 工作现场`,agentCards(agents));
+  const optional = splitDeferredPanels([
+    {key:'attention',empty:attention.length===0,html:attentionSection},
+    {key:'agents',empty:agents.length===0,html:agentSection}
+  ]);
+  const activePanel = key => optional.active.find(panel=>panel.key===key)?.html || '';
+  const deferredPanels = optional.deferred.map(panel=>panel.html).join('');
   return `${heading('总览')}<div class="metric-grid live-overview-metrics">
     ${metric('在研项目', activeProjects, 'folder', false, {unit:`/ ${projects.length}`})}
     ${metric('运行中的 Agent', data.running, 'bot', false, {unit:'个'})}
@@ -304,24 +313,27 @@ function overview() {
   </div>
     ${teamCards()}
     <div class="section-heading"><div class="section-title"><h2>项目空间</h2><span class="section-count">${allProjects().length}</span></div></div>${projectCards(allProjects())}
-    ${attentionPanel(attention)}
-    <div class="live-columns">${section(`${icon('bot')}AI 工作现场`,agentCards(runningAgents()))}${section(`${icon('document')}产出文档`,pulls(data.pulls.slice(0,5)),`<a href="#/outputs" class="live-more">全部文档 ${icon('arrow')}</a>`)}</div>
+    ${activePanel('attention')}
+    <div class="${adaptiveColumnsClass(agents.length?2:1)}">${activePanel('agents')}${section(`${icon('document')}产出文档`,pulls(data.pulls.slice(0,5)),`<a href="#/outputs" class="live-more">全部文档 ${icon('arrow')}</a>`)}</div>
     ${analytics()}${allocationPanel()}${activityPanel()}
-    ${section(`${icon('chart')}模型消耗`,modelRows())}`;
+    ${section(`${icon('chart')}模型消耗`,modelRows())}${deferredPanels}`;
 }
 function projectPage(key) {
   const project=allProjects().find(row=>row.full_name===key);
   if (!project) return `${heading('项目不存在',false)}${empty('返回总览选择项目')}`;
   const sessions=data.sessions.filter(row=>projectKey(row)===key), docs=data.pulls.filter(row=>row.full_name===key);
+  const agents=runningAgents(key);
+  const agentSection=`<div id="project-agents">${section(`${icon('bot')}AI 工作现场`,agentCards(agents))}</div>`;
   return `${heading(projectName(key))}<div class="live-project-info"><span>${project.local ? '本地工作区' : '已关联 GitHub 仓库'}</span>${status[project.status] ? `<span class="status-badge tone-${tone[project.status]||'muted'}">${status[project.status]}</span>` : ''}<span>${esc(key)}</span></div>
     <div class="metric-grid live-project-metrics">${metric('近期会话',sessions.length,'activity')}${metric('产出文档',docs.length,'document')}${metric('草稿',docs.filter(row=>row.is_draft).length,'document')}</div>
     <nav class="live-page-tabs" aria-label="项目内容"><button data-scroll-to="project-milestones">项目里程碑</button><button data-scroll-to="project-agents">AI 工作现场</button><button data-scroll-to="project-sessions">近期会话</button><button data-scroll-to="project-docs">产出文档</button><button data-scroll-to="project-members">项目成员</button></nav>
     <div id="project-milestones">${milestonePanel(key)}</div>
-    <div id="project-agents">${section(`${icon('bot')}AI 工作现场`,agentCards(runningAgents(key)))}</div>
+    ${agents.length?agentSection:''}
     <div id="project-sessions">${section(`${icon('activity')}近期会话与总结`,sessionRows(sessions))}</div>
     <div id="project-docs">${section(`${icon('document')}产出文档`,pulls(docs))}</div>
     <div id="project-members">${teamCards(key)}</div>
-    ${section(`${icon('warning')}待处理事项`,project.status==='blocked'?`<div class="live-attention"><span class="status-badge tone-red">已阻塞</span><strong>${esc(projectName(key))}</strong></div>`:empty('暂无待处理事项'))}`;
+    ${section(`${icon('warning')}待处理事项`,project.status==='blocked'?`<div class="live-attention"><span class="status-badge tone-red">已阻塞</span><strong>${esc(projectName(key))}</strong></div>`:empty('暂无待处理事项'))}
+    ${agents.length?'':agentSection}`;
 }
 function teamPage() {
   const subagents=data.agents.filter(row=>row.kind==='subagent').reduce((sum,row)=>sum+row.count,0);

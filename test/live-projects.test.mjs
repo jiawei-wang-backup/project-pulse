@@ -1,11 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {researchProjectCount,memberProjectKeys,renderProjectDocuments,isRunningAgent} from '../src/live-projects.js';
+import {researchProjectCount,memberProjectKeys,renderProjectDocuments,isRunningAgent,splitDeferredPanels,adaptiveColumnsClass} from '../src/live-projects.js';
 import {dashboardCutoff} from '../backend.mjs';
 import {escapeHtml} from '../src/domain.js';
 
 test('在研包括阻塞，不依赖Agent或最近活动，不包括完成、暂停及未知',()=>{
   assert.equal(researchProjectCount(['on_track','blocked','completed','paused','unknown'].map(status=>({status,last_activity_at:'2000-01-01',agents:[]}))),2);
+});
+test('空面板延后到页面底部，有内容面板保持原始顺序',()=>{
+  const panels=[{key:'attention',empty:true},{key:'agents',empty:false},{key:'documents',empty:false},{key:'other',empty:true}];
+  const result=splitDeferredPanels(panels);
+  assert.deepEqual(result.active.map(panel=>panel.key),['agents','documents']);
+  assert.deepEqual(result.deferred.map(panel=>panel.key),['attention','other']);
+});
+test('相邻面板为空时单个产出文档面板横跨整行',()=>{
+  assert.equal(adaptiveColumnsClass(1),'live-columns is-single');
+  assert.equal(adaptiveColumnsClass(2),'live-columns');
 });
 test('Agent窗口放宽到2小时，未知状态需近期用量证据，终止状态不冒充运行中',()=>{
   const now=Date.now(),agent=(state,minutes,extra={})=>({state,last_activity_at:new Date(now-minutes*60000).toISOString(),...extra});

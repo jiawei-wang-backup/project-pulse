@@ -80,6 +80,7 @@
 .analytics-grid .model-legend-item{margin-bottom:12px}
 .allocation-grid .allocation-item .progress-track span{background:var(--accent)}
 .live-columns{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:16px}
+.live-columns.is-single{grid-template-columns:minmax(0,1fr)}
 .live-columns .panel{min-width:0}
 .live-overview-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}
 .live-agent-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:14px}

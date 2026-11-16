@@ -1,5 +1,14 @@
 export const researchProjectCount = projects => projects.filter(project=>['on_track','blocked'].includes(project.status)).length;
 
+export function splitDeferredPanels(panels) {
+  return {
+    active: panels.filter(panel=>!panel.empty),
+    deferred: panels.filter(panel=>panel.empty)
+  };
+}
+
+export const adaptiveColumnsClass = visiblePanels => `live-columns${visiblePanels === 1 ? ' is-single' : ''}`;
+
 export function isRunningAgent(agent,now=Date.now()) {
   if(!agent) return false;
   const age=now-Date.parse(agent.last_activity_at);
