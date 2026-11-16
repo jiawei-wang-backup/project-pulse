@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
+import { listTeamSessions, editTeamSession, teamEditHistory } from './team-edits.mjs';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const toolId = value => typeof value === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(value);
@@ -500,8 +501,9 @@ async function reportDirectory(pool, lan) {
       ORDER BY c.source_id`,[digest(lan.credential)])
   ]);
   if (current.rows[0]?.revoked_at) fail(401,'invalid_device');
-  return {protocol_version:3, recommended_collector_version:'3.1.1',
-    capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill','client_pr_ingest','client_project_status'],sources:sources.rows,
+  return {protocol_version:3, recommended_collector_version:'3.2.0',
+    capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill','client_pr_ingest','client_project_status',
+      ...(process.env.PULSE_TEAM_EDITS==='1' ? ['team_metadata_edit'] : [])],sources:sources.rows,
     members:members.rows,repositories:repositories.rows,
     current_display_name:current.rows[0]?.display_name ?? null};
 }
@@ -518,7 +520,22 @@ export function createApi({localView = false, lanEnrollment = false} = {}) {
       try {
         const deviceKey = req.headers['x-pulse-lan-device'];
         const lan = lanEnrollment && !req.headers.authorization && deviceKey !== undefined ? lanIdentity(deviceKey,req.headers['x-pulse-lan-label'],req.headers['x-pulse-lan-github']) : null;
-        if (req.method==='POST' && ['/api/v1/reports','/api/v1/report-pulls','/api/v1/report-statuses'].includes(url.pathname)) {
+        if (['/api/v1/team-sessions','/api/v1/team-edits'].includes(url.pathname)) {
+          if (process.env.PULSE_TEAM_EDITS!=='1') fail(403,'team_edits_disabled');
+          if (req.method==='GET') {
+            res.setHeader('Cache-Control','no-store');
+            data=await (url.pathname==='/api/v1/team-sessions' ? listTeamSessions : teamEditHistory)(pool,token,lan,url.searchParams);
+          } else if (req.method==='POST' && url.pathname==='/api/v1/team-edits') {
+            if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) fail(415,'invalid_content_type');
+            const chunks=[];let length=0;
+            for await (const chunk of req) {
+              length+=chunk.length;
+              if (length>64*1024) {res.writeHead(413).end();return}
+              chunks.push(chunk);
+            }
+            data=await editTeamSession(pool,token,lan,Buffer.concat(chunks));
+          } else fail(405,'method_not_allowed');
+        } else if (req.method==='POST' && ['/api/v1/reports','/api/v1/report-pulls','/api/v1/report-statuses'].includes(url.pathname)) {
           if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) fail(415,'invalid_content_type');
           const chunks = [];
           let length = 0;

@@ -8,6 +8,7 @@
     "start": "node server.mjs",
     "test": "node --test",
     "test:integration": "node integration/smoke.mjs",
+    "test:team-edits": "node integration/team-edits.mjs",
     "sync:prs": "node db/sync-prs.mjs"
   },
   "engines": {

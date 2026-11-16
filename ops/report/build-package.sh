@@ -28,9 +28,10 @@ cp "$here/pulse-report.ps1" "$stage/project-pulse-report/pulse-report.ps1"
 cp "$here/pulse-report-linux.sh" "$stage/project-pulse-report/pulse-report-linux.sh"
 cp "$here/project-paths.example.json" "$stage/project-pulse-report/project-paths.example.json"
 cp "$repo/docs/lan-report.md" "$stage/project-pulse-report/lan-report.md"
+cp "$repo/docs/team-edits.md" "$stage/project-pulse-report/team-edits.md"
 chmod 755 "$stage/project-pulse-report/pulse-report.pl"
 chmod 755 "$stage/project-pulse-report/pulse-report-linux.sh"
-(cd "$stage/project-pulse-report" && /usr/bin/shasum -a 256 README.md PROMPT.txt VERSION UPGRADE.md pulse-report.pl pulse-report.ps1 pulse-report-linux.sh project-paths.example.json lan-report.md > SHA256SUMS)
+(cd "$stage/project-pulse-report" && /usr/bin/shasum -a 256 README.md PROMPT.txt VERSION UPGRADE.md pulse-report.pl pulse-report.ps1 pulse-report-linux.sh project-paths.example.json lan-report.md team-edits.md > SHA256SUMS)
 
 rm -f "$output"
 (cd "$stage" && /usr/bin/zip -X -q -r "$output" project-pulse-report)

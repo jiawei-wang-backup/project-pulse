@@ -124,14 +124,14 @@ if ($Action -eq 'Submit') {
             $end = $batch.cursor.to_offset
             if ($edit[0].summary -and $session -and $batch.cursor.from_offset -ne $end) {
                 $batch.summaries = @(@{summary_id=(StableId "codex:summary:${source}:$end"); session_id=$source;
-                    observed_at=$session.last_activity_at; summary=$edit[0].summary; summarizer_tool=$SummarizerTool; prompt_version='3.1.1'})
+                    observed_at=$session.last_activity_at; summary=$edit[0].summary; summarizer_tool=$SummarizerTool; prompt_version='3.2.0'})
             }
             if ($edit[0].goal -and $edit[0].milestones -and $session) {
                 $project = if ($session.repository) { $session.repository } else { $session.workspace_name }
                 if ($project) {
                     $batch.projects = @(@{report_id=(StableId "codex:project:${source}:${end}:$project"); source_session_id=$source;
                         project_key=$project; goal=$edit[0].goal; milestones=@($edit[0].milestones);
-                        observed_at=$session.last_activity_at; summarizer_tool=$SummarizerTool; prompt_version='3.1.1'})
+                        observed_at=$session.last_activity_at; summarizer_tool=$SummarizerTool; prompt_version='3.2.0'})
                 }
             }
         }
@@ -303,7 +303,7 @@ foreach ($file in $files) {
             }
             if ($resolvedRepo -and $cursor.session_exists -and $cursor.project_key -ne $resolvedRepo) {
                 if ('project_mapping_backfill' -in $directory.capabilities) {
-                    $batches+=@{schema_version=1;batch_id=[guid]::NewGuid().ToString();sent_at=[DateTime]::UtcNow.ToString('o');collector_version='3.1.1';
+                    $batches+=@{schema_version=1;batch_id=[guid]::NewGuid().ToString();sent_at=[DateTime]::UtcNow.ToString('o');collector_version='3.2.0';
                         sessions=@();agents=@();summaries=@();projects=@();usage=@();mappings=@(@{session_id=$source;repository=$resolvedRepo});
                         cursor=@{source_id=$source;from_offset=$from;to_offset=$from;context=$cursor.context}}
                 } else {$projectUnresolved.Add(@{source_id=$source;reason='server_project_mapping_upgrade_required'})}
@@ -415,7 +415,7 @@ foreach ($file in $files) {
             }
         }
         $batches += @{schema_version=1; batch_id=[guid]::NewGuid().ToString(); sent_at=[DateTime]::UtcNow.ToString('o');
-            collector_version='3.1.1'; sessions=$sessions; agents=$agents; summaries=@(); usage=$usage; projects=@();
+            collector_version='3.2.0'; sessions=$sessions; agents=$agents; summaries=@(); usage=$usage; projects=@();
             cursor=@{source_id=$source; from_offset=$from; to_offset=$end; context=@{model=$model;
                 report_from=$reportFrom;input_tokens=$counts.input_tokens; cached_input_tokens=$counts.cached_input_tokens; output_tokens=$counts.output_tokens}}}
     } finally { $stream.Dispose() }
@@ -425,5 +425,5 @@ if ($batches.Count) { $scanState.pending_work=$WorkDir }
 WriteJson $planPath @{batches=$batches; bytes_read=$bytesRead; backlog=$backlog;label=$Label;github_login=$GitHubLogin}
 WriteJson ($statePath+'.tmp') $scanState
 Move-Item -Force -LiteralPath ($statePath+'.tmp') -Destination $statePath
-@{collector_version='3.1.1';server=$Server;prepared_batches=$batches.Count;usage=(UsageTotals @($batches | ForEach-Object {$_.usage})); bytes_read=$bytesRead; backlog=$backlog;
+@{collector_version='3.2.0';server=$Server;prepared_batches=$batches.Count;usage=(UsageTotals @($batches | ForEach-Object {$_.usage})); bytes_read=$bytesRead; backlog=$backlog;
     diagnostics=@{checked_files=$checked;cursor_queries=$cursorQueries;unchanged_files=$unchanged;excluded_files=$excluded;project_unresolved=@($projectUnresolved.ToArray());session_roots_found=$roots.Count;discovery_checked=$discoveryChecked;discovery_incomplete=($queue.Count -gt 0);recovery_unverified=$scanState.recovery_unverified;initial_snapshots=$initialSnapshots;counter_resets=$counterResets;unmeasured_snapshots=$unmeasured;skipped=$skips}; evidence=$evidence} | ConvertTo-Json -Depth 20 -Compress
