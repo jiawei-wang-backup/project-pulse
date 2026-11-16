@@ -88,7 +88,7 @@ if ($Action -eq 'Submit') {
     if (Test-Path -LiteralPath (Join-Path $WorkDir 'pulls.json')) {
         $rawPulls=Get-Content -LiteralPath (Join-Path $WorkDir 'pulls.json') -Raw -Encoding UTF8
         if (!$rawPulls.TrimStart().StartsWith('[')) {throw 'pulls.json must be an array.'}
-        $pulls=@($rawPulls | ConvertFrom-Json)
+        $pulls=ConvertFrom-Json -InputObject $rawPulls
         if ($pulls.Count -gt 50) {throw 'At most 50 checked PR records per request.'}
     }
     $prBodyPath=Join-Path $WorkDir 'pr-request.json'
@@ -101,7 +101,7 @@ if ($Action -eq 'Submit') {
         WriteJson ($pendingPath+'.tmp') $pending;Move-Item -Force -LiteralPath ($pendingPath+'.tmp') -Destination $pendingPath
     }
     $edits = @()
-    if ([IO.File]::Exists($editsPath)) { $edits = @(Get-Content -LiteralPath $editsPath -Raw -Encoding UTF8 | ConvertFrom-Json) }
+    if ([IO.File]::Exists($editsPath)) { $edits = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $editsPath -Raw -Encoding UTF8) }
     $sent = 0
     $alreadyCommitted = 0
     $receipts=@()
@@ -182,7 +182,7 @@ $pathMappings=@{}
 if (Test-Path -LiteralPath $ProjectMap) {
     $raw=Get-Content -LiteralPath $ProjectMap -Raw -Encoding UTF8
     if (!$raw.TrimStart().StartsWith('[')) {throw 'Project map must be an array.'}
-    foreach ($mapping in @($raw | ConvertFrom-Json)) {
+    foreach ($mapping in (ConvertFrom-Json -InputObject $raw)) {
         if (!$mapping.old_path -or !$mapping.new_path) {throw 'Invalid project mapping.'}
         $key=PathKey $mapping.old_path
         if ($pathMappings.ContainsKey($key)) {throw 'Duplicate project mapping.'}

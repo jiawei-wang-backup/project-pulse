@@ -32,7 +32,7 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
       const chunks=[];for await(const chunk of req) chunks.push(chunk);
       const body=JSON.parse(Buffer.concat(chunks));
       if(rejectNext){rejectNext=false;res.writeHead(503).end();return;}
-      for(const p of body.pulls) assert.ok(cursors.has(p.source_session_id));
+      for(const p of body.pulls) assert.ok(cursors.has(p.source_session_id),JSON.stringify({keys:Object.keys(p),isArray:Array.isArray(p)}));
       if(prBatches.has(body.batch_id)) assert.deepEqual(prBatches.get(body.batch_id),body);
       prBatches.set(body.batch_id,body);
       result={status:'committed',batch_id:body.batch_id,pulls:body.pulls.length};
