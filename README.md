@@ -6,9 +6,11 @@
 
 ## 下载上报包
 
-**[下载当前版本 ZIP：project-pulse-report-3.1.1.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.1.1-20261116/project-pulse-report-3.1.1.zip)**
+**[下载最新上报 ZIP：project-pulse-report-latest.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/latest/download/project-pulse-report-latest.zip)**
 
-[始终下载最新版本](https://github.com/jiawei-wang-dev/project-pulse/releases/latest/download/project-pulse-report-latest.zip)
+当前版本：**3.1.1**。[下载固定版本 project-pulse-report-3.1.1.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.1.1-20261116-r2/project-pulse-report-3.1.1.zip)。
+
+本版已放宽Agent识别：明确运行状态保留2小时窗口，缺少开始事件时可根据新消息、模型输出、工具调用和用量补足；明确结束的任务不会被尾部Token快照复活。项目是否在研仍独立判断，不按时间超时。
 
 [发布记录](https://github.com/jiawei-wang-dev/project-pulse/releases) · [详细上报流程](ops/report/README.md) · [升级与验收说明](ops/report/UPGRADE.md)
 
