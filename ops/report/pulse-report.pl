@@ -16,12 +16,14 @@ use File::Spec;
 my ($state_dir,$github_login,$resolve_git,$project_map) = ($FindBin::Bin,undef,0,undef);
 my @session_roots;
 my @only_sources;
+my $max_line_bytes=32*1024*1024;
 my ($action,$work,$server,$label,$exclude,$include,$tool) =
   ('Prepare',undef,'http://192.168.16.70:4185',undef,undef,0,'codex');
 GetOptions('action=s'=>\$action,'work-dir=s'=>\$work,'server=s'=>\$server,'label=s'=>\$label,
     'exclude-session-id=s'=>\$exclude,'include-evidence'=>\$include,'summarizer-tool=s'=>\$tool,
     'state-dir=s'=>\$state_dir,'github-login=s'=>\$github_login,'resolve-git'=>\$resolve_git,
-    'session-root=s@'=>\@session_roots,'project-map=s'=>\$project_map,'only-source=s@'=>\@only_sources) or die "Invalid options\n";
+    'session-root=s@'=>\@session_roots,'project-map=s'=>\$project_map,'only-source=s@'=>\@only_sources,'max-line-bytes=i'=>\$max_line_bytes) or die "Invalid options\n";
+die "MaxLineBytes must be between 1 MiB and 256 MiB\n" unless $max_line_bytes>=1048576 && $max_line_bytes<=268435456;
 die "Expected Prepare or Submit and --work-dir\n" unless $work && $action =~ /\A(?:Prepare|Submit)\z/;
 $work=abs_path($work) // File::Spec->rel2abs($work);
 $state_dir=File::Spec->rel2abs($state_dir);
@@ -130,10 +132,10 @@ sub check_scope {
     my ($path,$plan)=@_;
     die "Selected projects require explicit OnlySource scope\n" if -f "$state_dir/.pulse-project-selection.json" && !@only_sources && !@{$plan->{allowed_sources}//[]};
     my @sources=map {$_->{cursor}{source_id}} @{$plan->{batches}//[]};
-    for my $entry (['pulls.json',undef],['statuses.json',undef],['pr-request.json','pulls'],['status-request.json','statuses']) {
+    for my $entry (['pulls.json',undef],['repositories.json',undef],['statuses.json',undef],['pr-request.json','pulls'],['pr-request.json','repositories'],['status-request.json','statuses']) {
         next unless -f "$path/$entry->[0]";
         my $data=read_json("$path/$entry->[0]");
-        my $rows=$entry->[1] ? $data->{$entry->[1]} : $data;
+        my $rows=$entry->[1] ? $data->{$entry->[1]}//[] : $data;
         push @sources,map {$_->{source_session_id}} @$rows;
     }
     for my $allowed (\@only_sources,$plan->{allowed_sources}//[]) {
@@ -148,10 +150,12 @@ if ($action eq 'Submit') {
     $label //= $plan->{label};
     $github_login //= $plan->{github_login};
     my $pulls=-f "$work/pulls.json" ? read_json("$work/pulls.json") : [];
+    my $repositories=-f "$work/repositories.json" ? read_json("$work/repositories.json") : [];
+    die "repositories.json must be an array of at most 50 checked repositories\n" unless ref($repositories) eq 'ARRAY' && @$repositories<=50;
     my $statuses=-f "$work/statuses.json" ? read_json("$work/statuses.json") : [];
     die "statuses.json must be an array of at most 50 assessments\n" unless ref($statuses) eq 'ARRAY' && @$statuses<=50;
     die "pulls.json must be an array of at most 50 checked PR records\n" unless ref($pulls) eq 'ARRAY' && @$pulls<=50;
-    if (@$pulls || -f "$work/pr-request.json" || @$statuses || -f "$work/status-request.json") {
+    if (@$pulls || @$repositories || -f "$work/pr-request.json" || @$statuses || -f "$work/status-request.json") {
         my $pending_file="$state_dir/.pulse-state-".substr(sha256_hex($server),0,12).'.json';
         my $state=-f $pending_file ? read_json($pending_file) : {report_from=>now(time()-7*86400),next_index=>0};
         $state->{pending_work}=abs_path($state->{pending_work}) // File::Spec->rel2abs($state->{pending_work}) if $state->{pending_work};
@@ -176,12 +180,12 @@ if ($action eq 'Submit') {
         my $project = $session ? ($session->{repository} // $session->{workspace_name}) : undef;
         if ($session && $edit->{summary}) {
             $batch->{summaries} = [{summary_id=>id("codex:summary:$source:$end"),session_id=>$source,
-                observed_at=>$session->{last_activity_at},summary=>$edit->{summary},summarizer_tool=>$tool,prompt_version=>'3.3.0'}];
+                observed_at=>$session->{last_activity_at},summary=>$edit->{summary},summarizer_tool=>$tool,prompt_version=>'3.4.0'}];
         }
         if ($project && $edit->{goal} && $edit->{milestones}) {
             $batch->{projects} = [{report_id=>id("codex:project:$source:$end:$project"),source_session_id=>$source,
                 project_key=>$project,goal=>$edit->{goal},milestones=>$edit->{milestones},
-                observed_at=>$session->{last_activity_at},summarizer_tool=>$tool,prompt_version=>'3.3.0'}];
+                observed_at=>$session->{last_activity_at},summarizer_tool=>$tool,prompt_version=>'3.4.0'}];
         }
         my $body = "$work/$batch->{batch_id}.json";
         write_json($body,$batch) unless -e $body;
@@ -213,15 +217,17 @@ if ($action eq 'Submit') {
             $status_receipt->{batch_id} eq $expected->{batch_id} && $status_receipt->{statuses}==@{$expected->{statuses}};
     }
     my $pr_receipt;
-    if (@$pulls || -f "$work/pr-request.json") {
+    if (@$pulls || @$repositories || -f "$work/pr-request.json") {
         my $directory=request('/api/v1/report-directory');
         die "Server upgrade required: client_pr_ingest\n" unless grep {$_ eq 'client_pr_ingest'} @{$directory->{capabilities}//[]};
+        die "Server upgrade required: multi_repository_projects (migration 011)\n" if @$repositories && !grep {$_ eq 'multi_repository_projects'} @{$directory->{capabilities}//[]};
         my $body="$work/pr-request.json";
-        write_json($body,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),pulls=>$pulls}) unless -f $body;
+        write_json($body,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),pulls=>$pulls,@$repositories ? (repositories=>$repositories) : ()}) unless -f $body;
         my $expected=read_json($body);
         $pr_receipt=request('/api/v1/report-pulls',$body);
         die "Unexpected PR receipt\n" unless $pr_receipt->{status} eq 'committed' &&
             $pr_receipt->{batch_id} eq $expected->{batch_id} && $pr_receipt->{pulls}==@{$expected->{pulls}};
+        die "Unexpected repository receipt\n" if exists($expected->{repositories}) && (!defined($pr_receipt->{repositories}) || $pr_receipt->{repositories}!=@{$expected->{repositories}});
     }
     my $finished_state="$state_dir/.pulse-state-".substr(sha256_hex($server),0,12).'.json';
     if (!$advanced && -f $finished_state) {
@@ -264,13 +270,19 @@ for my $mapping (@$mappings) {
     $path_mappings{$key}=$mapping->{new_path};
 }
 my @project_unresolved;
+sub business_repo {
+    my ($repo)=@_;return undef unless $repo;
+    my %roots=map {lc($_->{project_key})=>1} grep {lc($_->{repository}) eq lc($repo)} @{$directory->{project_repositories}//[]};
+    return (keys %roots)[0] if keys(%roots)==1;
+    return $repo;
+}
 sub resolve_project {
     my ($payload,$source)=@_;
     my $key=path_key($payload->{cwd});
     my $original=repo_name($payload->{git}{repository_url});
     my $cached=$scan_state->{workspace_repositories}{$key};
     my $live=$resolve_git ? git_repo($path_mappings{$key}//$payload->{cwd}) : undef;
-    my %choices=map {$_=>1} grep {defined && length} ($original,$live,$cached);
+    my %choices=map {business_repo($_)=>1} grep {defined && length} ($original,$live,$cached);
     if (keys(%choices)>1) {push @project_unresolved,{source_id=>$source,reason=>'conflicting_repository_evidence'};return $original}
     my ($repo)=keys %choices;
     if ($repo) {$scan_state->{workspace_repositories}{$key}=$repo if length $key;return $repo}
@@ -345,18 +357,10 @@ for my $entry (@files) {
     open my $fh,'<:raw',$entry->[0] or do { $skips{$checked}='cannot_open'; next };
     my $size = -s $fh;
     my $head = '';
-    # Recent Codex builds can emit a session_meta line larger than 16 KiB
-    # because it includes the resolved instruction set. Keep the read bounded,
-    # but large enough to decode that first JSONL record in the fast path.
-    while (index($head,"\n")<0 && $bytes<1048576) {
-        my $chunk='';
-        my $n=read($fh,$chunk,min(4096,1048576-$bytes)) // 0;
-        last unless $n;
-        $head.=$chunk; $bytes+=$n;
-    }
+    $head=read_segment($fh,4096,\$bytes,$deadline);
     my ($first) = $head =~ /\A([^\n]+)\n/;
     my $meta = eval { $json->decode($first // '') };
-    if (!$meta || $meta->{type} ne 'session_meta') { $skips{$checked}=index($head,"\n")<0 ? 'metadata_exceeds_budget_or_incomplete' : 'no_session_metadata'; next }
+    if (!$meta || $meta->{type} ne 'session_meta') { $skips{$checked}=index($head,"\n")<0 ? (length($head)>=$max_line_bytes ? 'line_exceeds_max_line_bytes' : 'metadata_incomplete') : 'no_session_metadata'; next }
     my $p = $meta->{payload};
     my $source = lc($p->{id} // '');
     next unless $source =~ $uuid;
@@ -381,7 +385,7 @@ for my $entry (@files) {
         }
         if ($resolved_repo && $cursor->{session_exists} && ($cursor->{project_key}//'') ne $resolved_repo) {
             if (grep {$_ eq 'project_mapping_backfill'} @{$directory->{capabilities}//[]}) {
-                push @batches,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),collector_version=>'3.3.0',
+                push @batches,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),collector_version=>'3.4.0',
                     sessions=>[],agents=>[],summaries=>[],projects=>[],usage=>[],
                     mappings=>[{session_id=>$source,repository=>$resolved_repo}],
                     cursor=>{source_id=>$source,from_offset=>$from,to_offset=>$from,context=>$cursor->{context}}};
@@ -391,8 +395,8 @@ for my $entry (@files) {
     }
     if ($size < $from) { $skips{$checked}='file_truncated'; next }
     seek($fh,$from,0) or die "Cannot seek log\n";
-    my $buffer = '';
-    $bytes += read($fh,$buffer,min($size-$from,1048576-$bytes)) // 0;
+    my $buffer = read_segment($fh,min($size-$from,1048576-$bytes>4096 ? 1048576-$bytes : 4096),\$bytes,$deadline);
+    $skips{$checked}='line_exceeds_max_line_bytes' if index($buffer,"\n")<0 && length($buffer)>=$max_line_bytes;
     my $end = $from;
     my $context = $cursor->{context} // {};
     my $source_cutoff=$context->{report_from} // ($from>0 ? '1970-01-01T00:00:00Z' : $cutoff);
@@ -485,7 +489,7 @@ for my $entry (@files) {
         }
     }
     my $batch_id = uuid4();
-    push @batches,{schema_version=>1,batch_id=>$batch_id,sent_at=>now(),collector_version=>'3.3.0',
+    push @batches,{schema_version=>1,batch_id=>$batch_id,sent_at=>now(),collector_version=>'3.4.0',
         sessions=>\@sessions,agents=>\@agents,summaries=>[],projects=>[],usage=>\@usage,
         cursor=>{source_id=>$source,from_offset=>$from,to_offset=>$end,
             context=>{model=>$model,report_from=>$source_cutoff,map { $_=>$context->{$_} } @counts}}};
@@ -499,9 +503,21 @@ $scan_state->{next_index}=($scan_state->{next_index}//0)+$checked;
 $scan_state->{pending_work}=$work if @batches;
 write_json($plan_file,{batches=>\@batches,allowed_sources=>\@only_sources,bytes_read=>$bytes,backlog=>$backlog,label=>$label,github_login=>$github_login});
 write_json("$state_file.tmp",$scan_state); rename "$state_file.tmp",$state_file or die "Cannot persist scan progress\n";
-print $json->encode({collector_version=>'3.3.0',server=>$server,prepared_batches=>scalar @batches,usage=>usage_totals([map {@{$_->{usage}}} @batches]),
+print $json->encode({collector_version=>'3.4.0',server=>$server,prepared_batches=>scalar @batches,usage=>usage_totals([map {@{$_->{usage}}} @batches]),
     bytes_read=>$bytes,backlog=>$backlog,diagnostics=>$diagnostics,evidence=>\@evidence}),"\n";
 sub min { $_[0]<$_[1] ? $_[0] : $_[1] }
+sub read_segment {
+    my ($fh,$initial,$bytes,$deadline)=@_;
+    my $buffer='';
+    my $n=read($fh,$buffer,min($initial,$max_line_bytes)) // 0;$$bytes+=$n;
+    # Extend only the first incomplete line. Never truncate/skip an event or
+    # move its byte offset until a newline and valid JSON have both been read.
+    while ($n && index($buffer,"\n")<0 && length($buffer)<$max_line_bytes && time()<$deadline) {
+        my $chunk='';$n=read($fh,$chunk,min(65536,$max_line_bytes-length($buffer))) // 0;
+        $buffer.=$chunk;$$bytes+=$n;
+    }
+    return $buffer;
+}
 
 sub entries {
     my ($dir,$pattern) = @_;

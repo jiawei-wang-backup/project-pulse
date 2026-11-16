@@ -33,12 +33,13 @@ test('成员项目始终合并长期关系和近期会话，不按同名仓库�
 });
 test('文档按项目生成可折叠分组，首组展开，PR链接、草稿和转义保留',()=>{
   const html=renderProjectDocuments([
-    {full_name:'owner/a',number:1,title:'<unsafe>',url:'https://github.com/owner/a/pull/1',state:'merged'},
+    {full_name:'owner/a',repository_full_name:'owner/secondary',number:1,title:'<unsafe>',url:'https://github.com/owner/a/pull/1',state:'merged'},
     {full_name:'owner/b',number:2,title:'Draft',url:'javascript:bad',is_draft:true,state:'open'}
   ],{esc:escapeHtml,icon:()=>'',date:()=>'',projectName:x=>x,safeGithub:u=>u.startsWith('https://github.com/')?u:''});
   assert.equal((html.match(/<details /g)||[]).length,2);
   assert.equal((html.match(/live-doc-group" open/g)||[]).length,1);
   assert.ok(html.includes('&lt;unsafe&gt;'));
+  assert.ok(html.includes('owner/secondary #1'));
   assert.ok(html.includes('已合并')&&html.includes('草稿'));
   assert.ok(!html.includes('javascript:'));
 });

@@ -167,6 +167,37 @@ try {
   assert.equal(prData.pulls.filter(p=>p.full_name==='example/moved'&&p.number==='7').length,1);
   assert.equal((await readCursor()).offset,300);
   assert.equal((await pool.query('SELECT count(*) FROM usage_events WHERE device_id=$1 AND session_id=$2',[device,sourceId])).rows[0].count,'1');
+  // Retry a retained legacy-format mixed-repository batch unchanged. PR
+  // numbers overlap across repositories; neither project nor usage moves.
+  const originalUsage=(await pool.query('SELECT * FROM usage_events WHERE device_id=$1 ORDER BY event_id',[device])).rows;
+  const projectsBefore=prData.projects.length;
+  const mixed={schema_version:1,batch_id:randomUUID(),sent_at:at,pulls:Array.from({length:30},(_,i)=>{
+    const repository=i<15?'example/moved':'example/secondary';
+    const number=100+i%15;
+    return {...prBatch.pulls[0],repository,github_id:i<15?43:440044,number,url:`https://github.com/${repository}/pull/${number}`};
+  })};
+  const retainedRaw=JSON.stringify(mixed);
+  const postRetained=async raw=>{const r=await fetch(base+'/api/v1/report-pulls',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:raw});return {status:r.status,body:await r.json()}};
+  const invalidMixed={...mixed,batch_id:randomUUID(),pulls:[mixed.pulls[15],{...mixed.pulls[0],source_session_id:randomUUID()}]};
+  assert.equal((await postRetained(JSON.stringify(invalidMixed))).body.error,'pr_session_missing');
+  assert.equal((await pool.query('SELECT count(*) FROM project_repository_links')).rows[0].count,'0');
+  assert.equal((await pool.query('SELECT count(*) FROM pull_requests WHERE number>=100')).rows[0].count,'0');
+  assert.equal((await postRetained(retainedRaw)).status,200);
+  assert.equal((await postRetained(retainedRaw)).status,200);
+  assert.equal((await pool.query('SELECT count(*) FROM pull_requests WHERE number>=100')).rows[0].count,'30');
+  assert.equal((await pool.query('SELECT count(*) FROM project_repository_links')).rows[0].count,'1');
+  const grouped=await (await fetch(base+'/api/v1/dashboard')).json();
+  assert.equal(grouped.projects.length,projectsBefore);
+  assert.equal(grouped.pulls.filter(p=>p.full_name==='example/moved').length,31);
+  assert.ok(grouped.pulls.some(p=>p.full_name==='example/moved' && p.repository_full_name==='example/secondary' && p.number==='100'));
+  assert.deepEqual(grouped.projects.find(p=>p.full_name==='example/moved').repositories,['example/moved','example/secondary']);
+  assert.deepEqual((await pool.query('SELECT * FROM usage_events WHERE device_id=$1 ORDER BY event_id',[device])).rows,originalUsage);
+  assert.equal((await readCursor()).offset,300);assert.equal((await readCursor()).project_key,'example/moved');
+  assert.equal((await readCursor()).project_report.goal,'补齐项目目标');
+  const repositoryOnly={schema_version:1,batch_id:randomUUID(),sent_at:at,pulls:[],repositories:[{source_session_id:sourceId,repository:'example/no-pr',github_id:450045}]};
+  assert.deepEqual(await submitPr(repositoryOnly),{status:'committed',batch_id:repositoryOnly.batch_id,pulls:0,repositories:1});
+  assert.deepEqual(await submitPr(repositoryOnly),{status:'committed',batch_id:repositoryOnly.batch_id,pulls:0,repositories:1});
+  assert.equal((await pool.query('SELECT count(*) FROM project_repository_links')).rows[0].count,'2');
   const lifecycleSource=randomUUID(),lifecycleRepo=randomUUID();
   const oldAt=new Date(Date.now()-40*86400000).toISOString();
   await pool.query("INSERT INTO repositories(repository_id,github_host,github_id,full_name) VALUES ($1,'github.com',44,'example/lifecycle')",[lifecycleRepo]);

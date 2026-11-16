@@ -124,7 +124,7 @@ function projectCards(items) {
     const countSessions=data.sessions.filter(row=>projectKey(row)===item.full_name).length;
     const countPulls=data.pulls.filter(row=>row.full_name===item.full_name).length;
     const href=`#/projects/${encodeURIComponent(item.full_name)}`;
-    return `<article class="project-card accent-${['lime','blue','purple','orange','teal'][index%5]}"><div class="card-header"><span class="project-symbol">${icon('folder')}</span><div class="card-name"><h3><a href="${href}">${esc(projectName(item.full_name))}</a></h3><p>${item.local ? '本地工作区' : '已关联 GitHub 仓库'}</p></div>${status[item.status] ? `<span class="status-badge tone-${tone[item.status]||'muted'}">${status[item.status]}</span>` : ''}</div>${milestoneCard(item.full_name)}<div class="live-card-counts"><span>${countSessions} 个会话</span><span>${countPulls} 份 PR</span></div><a class="card-footer" href="${href}"><span>${esc(item.full_name)}</span><span class="card-card-link">进入看板 ${icon('arrow')}</span></a></article>`;
+    return `<article class="project-card accent-${['lime','blue','purple','orange','teal'][index%5]}"><div class="card-header"><span class="project-symbol">${icon('folder')}</span><div class="card-name"><h3><a href="${href}">${esc(projectName(item.full_name))}</a></h3><p>${item.local ? '本地工作区' : item.repositories?.length>1 ? `已关联 ${item.repositories.length} 个 GitHub 仓库` : '已关联 GitHub 仓库'}</p></div>${status[item.status] ? `<span class="status-badge tone-${tone[item.status]||'muted'}">${status[item.status]}</span>` : ''}</div>${milestoneCard(item.full_name)}<div class="live-card-counts"><span>${countSessions} 个会话</span><span>${countPulls} 份 PR</span></div><a class="card-footer" href="${href}"><span>${esc(item.full_name)}</span><span class="card-card-link">进入看板 ${icon('arrow')}</span></a></article>`;
   }).join('')}</div>`;
 }
 function sessionRows(items,showProject=true) {
@@ -308,7 +308,7 @@ function overview() {
   return `${heading('总览')}<div class="metric-grid live-overview-metrics">
     ${metric('在研项目', activeProjects, 'folder', false, {unit:`/ ${projects.length}`})}
     ${metric('运行中的 Agent', data.running, 'bot', false, {unit:'个'})}
-    ${metric('成果文档', data.pulls.length, 'document', false, {unit:'份'})}
+    ${metric('成果文档', new Set(data.pulls.map(row=>row.url)).size, 'document', false, {unit:'份'})}
     ${metric(`${periods[days]} Token 用量`, count((data.models || []).reduce((sum, row) => sum + usageTotal(row), 0n)), 'token', true)}
   </div>
     ${teamCards()}

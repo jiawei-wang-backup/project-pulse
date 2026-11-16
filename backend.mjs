@@ -266,10 +266,17 @@ export async function ingest(pool, token, raw, lan = null) {
 export async function ingestPulls(pool,token,raw,lan=null) {
   if (!token && !lan) fail(401,'invalid_device');
   let report;try {report=JSON.parse(raw)} catch {fail(400,'invalid_json')}
-  if (!report || Object.keys(report).sort().join(' ')!=='batch_id pulls schema_version sent_at' ||
+  const hasRepositories=report && Object.hasOwn(report,'repositories');
+  if (!report || Object.keys(report).sort().join(' ')!==(hasRepositories ? 'batch_id pulls repositories schema_version sent_at' : 'batch_id pulls schema_version sent_at') ||
       report.schema_version!==1 || !uuid.test(report.batch_id) || !Array.isArray(report.pulls) ||
-      report.pulls.length<1 || report.pulls.length>50 || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(report.sent_at) ||
+      (hasRepositories && (!Array.isArray(report.repositories) || report.repositories.length>50)) ||
+      report.pulls.length+(report.repositories?.length??0)<1 || report.pulls.length>50 || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(report.sent_at) ||
       !Number.isFinite(Date.parse(report.sent_at))) fail(422,'invalid_pr_batch');
+  for (const r of report.repositories??[]) {
+    if (!r || Object.keys(r).sort().join(' ')!=='github_id repository source_session_id' || !uuid.test(r.source_session_id) ||
+      typeof r.repository!=='string' || !/^[\w.-]+\/[\w.-]+$/.test(r.repository) || r.repository.length>120 ||
+      !Number.isSafeInteger(r.github_id) || r.github_id<1) fail(422,'invalid_repository_record');
+  }
   for (const p of report.pulls) {
     if (!p || Object.keys(p).sort().join(' ')!=='created_at github_id is_draft number repository source_session_id state title updated_at url' ||
         !uuid.test(p.source_session_id) || typeof p.repository!=='string' || !/^[\w.-]+\/[\w.-]+$/.test(p.repository) || p.repository.length>120 ||
@@ -289,16 +296,23 @@ export async function ingestPulls(pool,token,raw,lan=null) {
     if(existing.rowCount) {
       if(!digest(raw).equals(existing.rows[0].request_digest)) fail(409,'batch_conflict');
     } else {
-      for(const p of report.pulls) {
+      for(const p of [...(report.repositories??[]),...report.pulls]) {
         const source=await db.query('SELECT repository_id FROM sessions WHERE device_id=$1 AND session_id=$2',[device,p.source_session_id]);
         if(!source.rowCount) fail(422,'pr_session_missing');
         const repo=await db.query(`INSERT INTO repositories(repository_id,github_host,github_id,full_name) VALUES ($1,'github.com',$2,$3)
           ON CONFLICT(github_host,github_id) DO UPDATE SET full_name=EXCLUDED.full_name RETURNING repository_id`,[randomUUID(),p.github_id,p.repository]);
-        if(source.rows[0].repository_id && source.rows[0].repository_id!==repo.rows[0].repository_id) fail(409,'project_repository_conflict');
-        // Keep other sessions untouched. The client's checked session->repo
-        // relation is part of this PR submission and belongs to this device.
-        await db.query('UPDATE sessions SET repository_id=$3 WHERE device_id=$1 AND session_id=$2',[device,p.source_session_id,repo.rows[0].repository_id]);
-        await db.query('UPDATE project_reports SET project_key=$3 WHERE device_id=$1 AND source_session_id=$2',[device,p.source_session_id,p.repository]);
+        const project=source.rows[0].repository_id ?? repo.rows[0].repository_id;
+        if (project!==repo.rows[0].repository_id) {
+          await db.query(`INSERT INTO project_repository_links(project_repository_id,repository_id,device_id,source_session_id)
+            VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,[project,repo.rows[0].repository_id,device,p.source_session_id]);
+        }
+        // Keep an established business project stable. Only fill an unassigned
+        // session; secondary-repository PRs never relocate its usage/reports.
+        if (!source.rows[0].repository_id) {
+          await db.query('UPDATE sessions SET repository_id=$3 WHERE device_id=$1 AND session_id=$2',[device,p.source_session_id,project]);
+          await db.query('UPDATE project_reports SET project_key=$3 WHERE device_id=$1 AND source_session_id=$2',[device,p.source_session_id,p.repository]);
+        }
+        if (!Object.hasOwn(p,'number')) continue;
         await db.query(`INSERT INTO pull_requests(repository_id,number,title,url,state,is_draft,created_at,updated_at)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(repository_id,number) DO UPDATE SET
           title=EXCLUDED.title,url=EXCLUDED.url,state=EXCLUDED.state,is_draft=EXCLUDED.is_draft,updated_at=EXCLUDED.updated_at
@@ -308,7 +322,8 @@ export async function ingestPulls(pool,token,raw,lan=null) {
         [device,report.batch_id,digest(raw),report.sent_at]);
     }
     await db.query('UPDATE devices SET last_seen_at=now() WHERE device_id=$1',[device]);
-    await db.query('COMMIT');return {batch_id:report.batch_id,status:'committed',pulls:report.pulls.length};
+    await db.query('COMMIT');return {batch_id:report.batch_id,status:'committed',pulls:report.pulls.length,
+      ...(hasRepositories ? {repositories:report.repositories.length} : {})};
   } catch(error) {
     await db.query('ROLLBACK');
     if(error.code==='23505') fail(409,'repository_identity_conflict');
@@ -386,10 +401,12 @@ export async function dashboard(pool, days, now = Date.now()) {
         ORDER BY s.last_activity_at DESC NULLS LAST,v.last_seen_at DESC NULLS LAST LIMIT 1
       ) t ON true ORDER BY d.display_name`,[]],
     [`SELECT r.repository_id,r.full_name,r.business_category,
+      ARRAY(SELECT actual.full_name FROM business_project_repositories l JOIN repositories actual ON actual.repository_id=l.repository_id
+        WHERE l.project_repository_id=r.repository_id ORDER BY actual.full_name) AS repositories,
       CASE WHEN r.completed_at IS NOT NULL THEN 'completed'
            ELSE coalesce(o.project_state,'unknown') END AS status,
       coalesce((SELECT json_agg(json_build_object('title',m.title,'state',m.state,'due_on',m.due_on) ORDER BY m.position) FROM project_milestones m WHERE m.repository_id=r.repository_id),'[]') AS milestones
-      FROM repositories r LEFT JOIN LATERAL (
+      FROM business_projects r LEFT JOIN LATERAL (
         SELECT project_state,observed_at FROM sessions WHERE repository_id=r.repository_id AND observed_at IS NOT NULL ORDER BY observed_at DESC,session_id LIMIT 1
       ) o ON true ORDER BY r.full_name`,[]],
     [`SELECT u.provider,u.model,sum(u.input_tokens) AS input_tokens,sum(u.cached_input_tokens) AS cached_input_tokens,
@@ -401,7 +418,10 @@ export async function dashboard(pool, days, now = Date.now()) {
       ORDER BY observed_at DESC,summary_id LIMIT 1) x ON true WHERE s.last_activity_at >= $1 ORDER BY s.last_activity_at DESC LIMIT 100`,[cutoff]],
     [`SELECT a.kind,a.state,count(*)::int AS count FROM agents a WHERE a.last_activity_at >= $1 GROUP BY a.kind,a.state`,[cutoff]],
     [`SELECT count(*)::int AS count FROM agents a WHERE ${activeAgentSql('a','$1::timestamptz')}`,[end]],
-    [`SELECT r.full_name,p.* FROM pull_requests p JOIN repositories r USING(repository_id) ORDER BY r.full_name,p.created_at DESC,p.number DESC LIMIT 500`,[]],
+    [`SELECT project.full_name,r.full_name AS repository_full_name,p.* FROM pull_requests p JOIN repositories r USING(repository_id)
+      JOIN business_project_repositories link ON link.repository_id=p.repository_id
+      JOIN business_projects project ON project.repository_id=link.project_repository_id
+      ORDER BY project.full_name,p.created_at DESC,p.repository_id,p.number DESC LIMIT 500`,[]],
     [`SELECT DISTINCT ON (q.account_id,q.limit_id,q.window_key) d.display_name,a.provider,q.limit_id,q.window_key,q.used_percent,q.resets_at,q.observed_at
       FROM quota_snapshots q JOIN provider_accounts a USING(account_id) JOIN developers d ON d.developer_id=q.developer_id
       ORDER BY q.account_id,q.limit_id,q.window_key,q.observed_at DESC`,[]],
@@ -483,7 +503,7 @@ async function reportCursor(pool, token, sourceId, lan = null) {
 }
 
 async function reportDirectory(pool, lan) {
-  const [members, repositories, current, sources] = await Promise.all([
+  const [members, repositories, current, sources, projectRepositories] = await Promise.all([
     pool.query(`SELECT d.display_name,g.github_login,
       ARRAY(SELECT DISTINCT r.full_name FROM devices v JOIN sessions s USING (device_id)
         JOIN repositories r USING (repository_id)
@@ -498,13 +518,16 @@ async function reportDirectory(pool, lan) {
       WHERE v.credential_digest=$1`,[digest(lan.credential)]),
     pool.query(`SELECT c.source_id,c.byte_offset AS offset FROM report_cursors c
       JOIN devices v USING (device_id) WHERE v.credential_digest=$1 AND v.revoked_at IS NULL
-      ORDER BY c.source_id`,[digest(lan.credential)])
+      ORDER BY c.source_id`,[digest(lan.credential)]),
+    pool.query(`SELECT project.full_name AS project_key,r.full_name AS repository FROM business_project_repositories l
+      JOIN business_projects project ON project.repository_id=l.project_repository_id
+      JOIN repositories r ON r.repository_id=l.repository_id ORDER BY project.full_name,r.full_name`)
   ]);
   if (current.rows[0]?.revoked_at) fail(401,'invalid_device');
-  return {protocol_version:3, recommended_collector_version:'3.3.0',
-    capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill','client_pr_ingest','client_project_status',
+  return {protocol_version:3, recommended_collector_version:'3.4.0',
+    capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill','client_pr_ingest','client_project_status','multi_repository_projects',
       ...(process.env.PULSE_TEAM_EDITS==='1' ? ['team_metadata_edit'] : [])],sources:sources.rows,
-    members:members.rows,repositories:repositories.rows,
+    members:members.rows,repositories:repositories.rows,project_repositories:projectRepositories.rows,
     current_display_name:current.rows[0]?.display_name ?? null};
 }
 

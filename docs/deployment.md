@@ -17,7 +17,8 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f db/007_github_identities.sql \
   -f db/008_project_key_case.sql \
   -f db/009_project_lifecycle.sql \
-  -f db/010_team_edits.sql
+  -f db/010_team_edits.sql \
+  -f db/011_project_repositories.sql
 ```
 
 已有库只执行尚未应用的迁移。通过部署环境提供DATABASE_URL，启动完整局域网看板：
@@ -25,6 +26,8 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
 ```sh
 PULSE_LAN_ENROLLMENT=1 PULSE_HOST=0.0.0.0 PORT=4185 npm start
 ```
+
+3.4.0真正服务端必须先应用011_project_repositories迁移并重启，确认目录声明multi_repository_projects。迁移保留现有仓库、会话、用量和游标；关联按客户端确认建立，不按名字猜测或自动合并历史项目。
 
 当前上报包指向 `http://192.168.16.70:4185`。更换服务地址时同时更新脚本默认值、提示词、README和已有任务，再重新分发；不能用客户端IP替换。
 

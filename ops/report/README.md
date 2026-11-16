@@ -1,6 +1,6 @@
 # Project Pulse macOS / Windows / Linux 快速上报包
 
-版本以 `VERSION` 为准（当前 3.3.0），需要服务端协议3、client_project_status能力，以及已应用009_project_lifecycle迁移。先阅读 `UPGRADE.md`，升级时保留隐藏状态和待续传目录。包内SHA256SUMS可核对完整性。
+版本以 `VERSION` 为准（当前 3.4.0），多仓库功能需要服务端011迁移及multi_repository_projects能力；需要服务端协议3、client_project_status能力，以及已应用009_project_lifecycle迁移。先阅读 `UPGRADE.md`，升级时保留隐藏状态和待续传目录。包内SHA256SUMS可核对完整性。
 
 这是客户端上报包。解压后不要移动包内文件，在 Codex 打开解压后的 `project-pulse-report` 目录，把 `PROMPT.txt` 全文发给 Codex。不要直接在 ZIP 预览里执行。
 
@@ -8,9 +8,9 @@
 
 服务端启用 `team_metadata_edit` 能力后，客户端也可修正全员的摘要、项目归属、目标、里程碑和状态，操作流程见包内 `team-edits.md`。先查询最新记录和version，明确目标成员与来源会话，再修改和核验回执；不能直接写数据库或凭空调整Token。
 
-**[下载最新上报 ZIP：project-pulse-report-3.3.0.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.3.0-20261116/project-pulse-report-3.3.0.zip)**
+**[下载最新上报 ZIP：project-pulse-report-3.4.0.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.4.0-20261116/project-pulse-report-3.4.0.zip)**
 
-本版3.3.0先盘点项目供用户选择，确认后仅上报所选项目并创建30分钟任务；详见 `project-selection.md`。保留全员数据修正说明及接口，启用步骤见 `team-edits.md`，服务端未启用时不能宣称可修改。继续保留宽松Agent识别：运行窗口2小时，补足消息／输出／工具／用量活动信号，明确结束仍退出。覆盖更新原永久目录后，重新发送下面提示词以更新原30分钟任务，不能只下载新包而继续运行旧目录。
+本版3.4.0先盘点项目供用户选择，确认后仅上报所选项目并创建30分钟任务；详见 `project-selection.md`。保留全员数据修正说明及接口，启用步骤见 `team-edits.md`，服务端未启用时不能宣称可修改。继续保留宽松Agent识别：运行窗口2小时，补足消息／输出／工具／用量活动信号，明确结束仍退出。覆盖更新原永久目录后，重新发送下面提示词以更新原30分钟任务，不能只下载新包而继续运行旧目录。
 
 解压到永久目录，用Codex打开本文件夹，复制下面整段发送；也可直接发送PROMPT.txt全文。不要仅打开ZIP预览。
 
@@ -21,7 +21,7 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，先�
 
 我授权你识别本机 Codex 主会话及相关项目、成员、GitHub仓库和PR、模型与真实Token用量，并生成脱敏摘要、项目目标和里程碑。先主动查找并复用已有信息，仍缺信息或证据冲突时，再集中询问我。排除当前上报会话，不编造数据。
 
-使用包内对应系统的固定脚本，向 http://192.168.16.70:4185 增量上报。PR也要按README查证并结构化提交，分别核对日志、Token和PR回执。
+使用包内对应系统的固定脚本，向 http://192.168.16.70:4185 增量上报。一个所选业务项目可关联多个仓库：查证每个真实仓库及数字ID，按README写repositories.json；PR按实际仓库与编号提交，不伪造单仓库归属。先核对服务端multi_repository_projects能力。PR也要按README查证并结构化提交，分别核对日志、Token和PR回执。
 
 项目状态由会话证据判断，在研包含尚未完成的阻塞项目；不按时间超时，与Agent执行状态分开。状态变化或首次补齐时按README提交statuses.json并核对status_receipt，不把一轮任务结束当作整个项目完成。
 
@@ -94,9 +94,9 @@ Linux提交命令：
 sh ./pulse-report-linux.sh --action Submit --work-dir "<同一个待续传子目录>"
 ```
 
-脚本单轮检查最多8个候选文件、最多读取1 MiB，并在约12秒扫描预算到达后暂停；请求最多等待4秒。首次采集起点为首次运行前7天，并持久化在本包状态及服务端游标上下文，之后不随日期滚动；已知来源即使修改时间过旧也继续追赶积压。轮转位置持久化，多次运行会继续轮转。无变化文件也计入检查预算，所以 `backlog` 是待检查／待读取提示，不是精确剩余字节数。
+脚本单轮检查最多8个候选文件、普通预算读取1 MiB，首个不完整长行可扩展至默认32 MiB，并在约12秒扫描预算到达后暂停；请求最多等待4秒。首次采集起点为首次运行前7天，并持久化在本包状态及服务端游标上下文，之后不随日期滚动；已知来源即使修改时间过旧也继续追赶积压。轮转位置持久化，多次运行会继续轮转。无变化文件也计入检查预算，所以 `backlog` 是待检查／待读取提示，不是精确剩余字节数。
 
-首次快照：会话开始于采集范围内时可计入该主会话累计量；跨窗口老会话的首次快照只用可信的 `last_token_usage`，不将窗口前累计量计入。正常快照取累计差分，重复快照计零；累计值回退时只用明确的 `last_token_usage`，缺失则记录 `unmeasured_snapshots`。该诊断表示存在无法确定的用量，不能声称计量完整。文件头分段读取到完整首行，受整轮1 MiB限制；不完整行不推进游标。超过预算的长行、截断或损坏文件报告诊断，不能静默跳过。
+首次快照：会话开始于采集范围内时可计入该主会话累计量；跨窗口老会话的首次快照只用可信的 `last_token_usage`，不将窗口前累计量计入。正常快照取累计差分，重复快照计零；累计值回退时只用明确的 `last_token_usage`，缺失则记录 `unmeasured_snapshots`。该诊断表示存在无法确定的用量，不能声称计量完整。文件头及数据行都支持有界长行扩展；默认单行上限32 MiB，macOS／Linux可传 `--max-line-bytes 67108864`，Windows可传 `-MaxLineBytes 67108864`，最大允许256 MiB。超过上限返回line_exceeds_max_line_bytes，保持该行起点和Token基线；提高上限后从同一位置继续，不跳过记录；同时把相同MaxLineBytes参数写入原30分钟任务，避免下一轮退回较低上限。尚未完整换行或JSON损坏时同样不推进该记录游标。普通扫描仍为约12秒，长行扩展与解析可能增加本轮用时，bytes_read按真实读取量报告。
 
 `-ResolveGit`／`--resolve-git` 只读工作目录或已识别迁移目录的本地 Git remote；客户端Codex负责以下迁移分析。以规范化的 GitHub `owner/repo` 关联项目；未登记仓库也保留规范项目键，之后管理员登记时可归入同一项目。
 
@@ -147,7 +147,7 @@ sh ./pulse-report-linux.sh --action Submit --work-dir "<同一个待续传子目
 
 Submit先提交日志与用量，再将PR请求保存为不可变 `pr-request.json` 并发送 `POST /api/v1/report-pulls`；成功回执为 `pr_receipt: {batch_id,status:"committed",pulls:条数}`。脚本核对批次与条数。失败保留本目录，下轮Prepare优先重试，不能更改已发送正文。PR重复提交幂等，较旧updated_at不会覆盖新状态。服务端可据查证的仓库数字ID登记仓库，并只关联本设备对应会话；仓库身份冲突明确返回错误，不静默覆盖。PR不改变Token计量与读取游标。
 
-真正服务端需提供 `client_pr_ingest` 能力（更新代码并重启，无新迁移）；缺失时明确报告PR尚未同步，不能降级为“摘要里写了链接就算已上传”。回报日志回执与PR回执两项，再辅助检查Dashboard.pulls。只有PR已识别但未提交时不得声称全部同步完成。
+真正服务端需提供 `client_pr_ingest` 能力；多仓库还需011迁移及 `multi_repository_projects` 能力；缺失时明确报告PR尚未同步，不能降级为“摘要里写了链接就算已上传”。回报日志回执与PR回执两项，再辅助检查Dashboard.pulls。只有PR已识别但未提交时不得声称全部同步完成。
 
 ## 客户端项目状态判断
 
@@ -175,11 +175,25 @@ observed_at为本次有证据的判断时间，状态无变化时不反复提交
 
 服务器须应用009迁移并提供client_project_status能力；旧服务端明确报升级要求。无状态不能猜在研：先询问项目目标或暂停／完成依据。
 
+## 一个业务项目关联多个仓库
+
+真正服务端先应用 `db/011_project_repositories.sql` 并重启，目录必须声明 `multi_repository_projects`。会话的主仓库UUID作为稳定业务项目身份；已核实的额外仓库通过独立关联表挂到该项目。PR始终以真实仓库ID与PR编号为键，不能将JXAccount的PR伪造成MCPhub仓库的PR。第二个仓库的PR不改变既有会话归属、目标、里程碑或Token游标。项目卡片展示关联仓库数量，文档在业务项目内标明PR的真实仓库。
+
+即使无PR，也可在本轮工作目录写 `repositories.json`，数组最多50条，每条仅包含：
+
+```json
+[{"source_session_id":"已选项目的一条已上报主会话UUID","repository":"owner/secondary","github_id":123456}]
+```
+
+源会话、仓库关系与数字ID必须查证，不能按同名目录或仓库相似度擅自合并；只登记用户所选业务项目相关仓库。Submit会把它和pulls.json一起保存为不可变pr-request.json，向既有report-pulls接口提交；无PR时pulls可以为空。核对pr_receipt.repositories与实际仓库条数、pulls与实际PR条数。关联及PR在同一事务中提交，失败整批回滚，不影响已成功提交的日志或Token；重复请求幂等。已有旧版失败的30条混合仓库请求，在服务端升级后原样重试即可，不改批次ID、会话ID或事件ID。
+
+服务端目录的project_repositories提供业务项目与真实仓库对应关系。只有唯一、已核实的关联才可复用；一个仓库映射多个业务项目、或本来有独立项目会话时须让用户确认，不自动移动历史数据。新会话识别到唯一的已关联仓库时复用既有业务项目；已选项目可在私有选择中增加 `repositories` 数组记录已确认仓库，仍按source_ids限制本轮上报。团队数据修正不会自动删除关联表，归属变更前先查证影响范围。
+
 ## 定时任务执行规则
 
-- `PROMPT.txt` 明确要求并授权“立即上报”和“设置每30分钟定时任务”两个必做交付。试报成功后必须继续调用 Codex 桌面端定时任务工具（`automation_update`），不得再次询问是否设置，也不得在一次上传完成后结束。不能以有积压、无新增用量或沿用摘要为由跳过。定时运行本身只执行一轮上报，不重复创建任务。
+- `PROMPT.txt` 明确要求先盘点并等待项目选择，确认后授权“所选项目试报”和“设置每30分钟定时任务”两个必做交付。试报成功后必须继续调用 Codex 桌面端定时任务工具（`automation_update`），不得再次询问是否设置，也不得在一次上传完成后结束。不能以有积压、无新增用量或沿用摘要为由跳过。定时运行本身只执行一轮上报，不重复创建任务。
 - 先查找本机同目录、同上报用途的已有任务，更新并启用；没有才创建。任务名为「Project Pulse 每30分钟上报」，每 30 分钟执行一次，工作目录必须是解压后的永久目录，不得使用临时目录或 ZIP 路径。
-- 定时任务正文（创建时将“本包永久目录”替换为实际绝对目录）：`PROJECT_PULSE_AUTOMATION。读取本包永久目录的VERSION和README.md，服务端为http://192.168.16.70:4185。由当前客户端Codex主动识别成员、项目、迁移目录、主会话、GitHub仓库与PR、模型、三类Token、摘要、目标及里程碑。先恢复待发请求，复用已有证据与映射；使用固定脚本解析Token差分并提交，不能估算或重复累计。用已授权GitHub工具检查open／closed／merged／draft，将查证结果按README写入pulls.json并用Submit提交，即使无新增日志也要检查PR。核对日志committed、usage_verified、PR的pr_receipt及diagnostics，报告实际提交、覆盖范围、积压和无法计量项。先自行查找与判断，仅在仍缺少信息或证据冲突时在任务结果集中反问用户；不要阻塞其他可确认数据上报。项目状态由会话证据判断，on_track与blocked均为在研；不按时间超时，不把Agent任务结束当作项目完成。状态变化或首次补齐时写statuses.json并核对status_receipt，无证据则沿用上次状态。排除当前上报会话，不启动服务端，不重复创建任务。`
+- 定时任务正文（创建时将“本包永久目录”替换为实际绝对目录）：`PROJECT_PULSE_AUTOMATION。读取本包永久目录的VERSION和README.md，服务端为http://192.168.16.70:4185。由当前客户端Codex主动识别成员、项目、迁移目录、主会话、GitHub仓库与PR、模型、三类Token、摘要、目标及里程碑。先读取私有项目选择，仅对所选项目传OnlySource，空选择或损坏则停止；确认旧待发范围一致后恢复，复用已有证据与映射；使用固定脚本解析Token差分并提交，不能估算或重复累计。用已授权GitHub工具检查open／closed／merged／draft，将查证结果按README写入pulls.json并用Submit提交，即使无新增日志也要检查PR。核对日志committed、usage_verified、PR的pr_receipt及diagnostics，报告实际提交、覆盖范围、积压和无法计量项。先自行查找与判断，仅在仍缺少信息或证据冲突时在任务结果集中反问用户；不要阻塞其他可确认数据上报。项目状态由会话证据判断，on_track与blocked均为在研；不按时间超时，不把Agent任务结束当作项目完成。状态变化或首次补齐时写statuses.json并核对status_receipt，无证据则沿用上次状态。排除当前上报会话，不启动服务端，不重复创建任务。`
 - 创建或更新后必须重新查询任务，确认名称、已启用、30 分钟间隔和工作目录。未实际查到任务时不得声称「已设置」。当前工具无定时任务能力时，必须明确回报「未设置」及原因。
 - Linux也遵守相同规则：只有当前执行工具实际提供定时任务能力才可设置；只有CLI而没有该能力时，完成可执行的上报并明确报告“定时任务未设置”，不擅自安装服务或写入cron。
 - 只有试报成功且重新查询确认定时任务已启用，才可报告整体完成。最终给出任务标识、实际计划规则及下次运行时间（工具未提供则如实说明）。试报失败或定时任务工具缺失／报错时报告“整体未完成”，列出失败步骤和具体错误。

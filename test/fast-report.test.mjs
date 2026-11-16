@@ -27,7 +27,7 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
   const server=http.createServer(async(req,res)=>{
     const url=new URL(req.url,'http://local');
     let result;
-    if(url.pathname==='/api/v1/report-directory') result={protocol_version:3,capabilities:['project_mapping_backfill','client_pr_ingest','client_project_status'],members:[],repositories:[],sources:[...cursors].map(([source_id,c])=>({source_id,offset:c.offset}))};
+    if(url.pathname==='/api/v1/report-directory') result={protocol_version:3,capabilities:['project_mapping_backfill','client_pr_ingest','client_project_status','multi_repository_projects'],members:[],repositories:[],sources:[...cursors].map(([source_id,c])=>({source_id,offset:c.offset}))};
     else if(url.pathname==='/api/v1/report-cursor') result=cursors.get(url.searchParams.get('source_id')) ?? {offset:0,context:{},repositories:[]};
     else if(req.method==='POST' && url.pathname==='/api/v1/report-statuses') {
       const chunks=[];for await(const chunk of req) chunks.push(chunk);
@@ -46,7 +46,7 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
       for(const p of body.pulls) assert.ok(cursors.has(p.source_session_id),JSON.stringify({keys:Object.keys(p),isArray:Array.isArray(p)}));
       if(prBatches.has(body.batch_id)) assert.deepEqual(prBatches.get(body.batch_id),body);
       prBatches.set(body.batch_id,body);
-      result={status:'committed',batch_id:body.batch_id,pulls:body.pulls.length};
+      result={status:'committed',batch_id:body.batch_id,pulls:body.pulls.length,...(body.repositories ? {repositories:body.repositories.length} : {})};
     }
     else if(req.method==='POST') {
       const chunks=[]; for await(const chunk of req) chunks.push(chunk);
@@ -228,6 +228,53 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
     activePlan=JSON.parse(await readFile(join(completedWork,'plan.json')));
     assert.equal(activePlan.batches.find(b=>b.cursor.source_id===activitySource).agents[0].state,'completed');
     await invoke('Submit',completedWork);
+    // Giant metadata, a >1 MiB UTF-8 token event, CRLF and a partial tail.
+    // A low limit stops without moving the cursor; increasing it resumes the
+    // very same source/byte positions. A transport failure remains idempotent.
+    const longSource=randomUUID(),longFile=join(logs,`${longSource}.jsonl`);
+    const longRows=[{...meta,payload:{...meta.payload,id:longSource,base_instructions:'x'.repeat(1100000)}},
+      {type:'event_msg',timestamp:at,payload:{type:'user_message',message:'Build long log fixture'}},
+      {type:'turn_context',payload:{model:'large-model'}},
+      {...token(100,80,5),padding:'中'.repeat(500000)},token(120,90,8)];
+    const complete=longRows.map(JSON.stringify).join('\r\n')+'\r\n';
+    const longPartial=JSON.stringify(token(130,95,9));
+    await writeFile(longFile,complete+longPartial.slice(0,-1));
+    const only=windows?['-OnlySource',longSource]:['--only-source',longSource];
+    const limit=windows?['-MaxLineBytes','1048576']:['--max-line-bytes','1048576'];
+    const capped=await invoke('Prepare',join(root,'long-capped'),[...only,...limit]);
+    assert.equal(capped.prepared_batches,0);
+    assert.ok(Object.values(capped.diagnostics.skipped).includes('line_exceeds_max_line_bytes'));
+    assert.ok(!cursors.has(longSource));
+    const longBefore={...totals};let retried=false;
+    // This cap accepts metadata but not the giant token event. Earlier
+    // complete records can commit; the oversized event itself cannot move.
+    const dataCap=windows?['-MaxLineBytes','1310720']:['--max-line-bytes','1310720'];
+    for(let round=0;round<2;round++) {
+      const cappedWork=join(root,`long-data-capped-${round}`);
+      await invoke('Prepare',cappedWork,[...only,...dataCap]);await invoke('Submit',cappedWork,only);
+    }
+    assert.equal(cursors.get(longSource).offset,Buffer.byteLength(longRows.slice(0,3).map(JSON.stringify).join('\r\n')+'\r\n'));
+    assert.deepEqual(totals,longBefore);
+    for(let round=0;round<8;round++) {
+      const work=join(root,`long-${round}`);await invoke('Prepare',work,only);
+      const plan=JSON.parse(await readFile(join(work,'plan.json')));
+      if(plan.batches.some(b=>b.usage.length) && !retried) {
+        rejectNext=true;await assert.rejects(invoke('Submit',work,only));retried=true;
+      }
+      await invoke('Submit',work,only);
+      if(cursors.get(longSource)?.offset===Buffer.byteLength(complete)) break;
+    }
+    assert.ok(retried);
+    assert.equal(cursors.get(longSource).offset,Buffer.byteLength(complete));
+    assert.deepEqual(Object.fromEntries(Object.keys(totals).map(k=>[k,totals[k]-longBefore[k]])),{input_tokens:120,cached_input_tokens:90,output_tokens:8});
+    await writeFile(longFile,complete+longPartial+'\r\n');
+    const tailWork=join(root,'long-tail');await invoke('Prepare',tailWork,only);await invoke('Submit',tailWork,only);
+    assert.equal(cursors.get(longSource).offset,Buffer.byteLength(complete+longPartial+'\r\n'));
+    assert.equal(totals.input_tokens-longBefore.input_tokens,130);
+    const repoOnly=join(root,'repo-only');await invoke('Prepare',repoOnly,only);
+    await writeFile(join(repoOnly,'repositories.json'),JSON.stringify([{source_session_id:longSource,repository:'example/secondary',github_id:44}]));
+    const repoReceipt=await invoke('Submit',repoOnly,only);
+    assert.equal(repoReceipt.pr_receipt.repositories,1);assert.equal(repoReceipt.pr_receipt.pulls,0);
     const scopedWork=join(root,'scoped');
     const scoped=await invoke('Prepare',scopedWork,windows?['-OnlySource',randomUUID()]:['--only-source',randomUUID()]);
     assert.equal(scoped.prepared_batches,0);

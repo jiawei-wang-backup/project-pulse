@@ -12,7 +12,7 @@
 
 两个请求均带 `X-Pulse-LAN-Device: <64 位小写 SHA-256 十六进制>`。在 shell 内以机器 ID 与当前 OS 用户标识组成固定字符串，UTF-8 无 BOM 哈希，原值留在本机。macOS 用 IOPlatformUUID 和 `id -u`，Windows 用注册表 `HKLM:\SOFTWARE\Microsoft\Cryptography` 的 MachineGuid 和当前 Windows 用户 SID，Linux 用 `/etc/machine-id` 和 `id -u`。任一值拿不到就报错结束。不要用 IP、随机数或会话 ID 替代，也不要在聊天里输出设备标识。
 
-用 `curl -q -sS --connect-timeout 3 --max-time 10`（Windows 明确用 `curl.exe`），禁用跳转。每轮最多读 8 个有增量的文件，合计 1 MiB，限制在近期 7 天的日志。排除本上报任务和首条用户请求含 PROJECT_PULSE_AUTOMATION 的会话。只在 shell 内解析原始日志，将脱敏证据交给模型。临时正文用私有目录或文件权限，结束后清理。无变化且没有缺失的项目报告时立即退出。只有实际成果、验证结果或阻塞变化时才更新摘要，否则省略摘要行。
+用 `curl -q -sS --connect-timeout 3 --max-time 10`（Windows 明确用 `curl.exe`），禁用跳转。每轮最多读 8 个有增量的文件，普通预算合计1 MiB，首个不完整长行可有界扩展至默认32 MiB（固定脚本MaxLineBytes可配置至最多256 MiB，超限保留游标并报告），限制在近期 7 天的日志。排除本上报任务和首条用户请求含 PROJECT_PULSE_AUTOMATION 的会话。只在 shell 内解析原始日志，将脱敏证据交给模型。临时正文用私有目录或文件权限，结束后清理。无变化且没有缺失的项目报告时立即退出。只有实际成果、验证结果或阻塞变化时才更新摘要，否则省略摘要行。
 
 ## 识别上报者
 

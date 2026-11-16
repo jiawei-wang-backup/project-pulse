@@ -11,7 +11,8 @@ param(
     [switch]$ResolveGit,
     [string[]]$SessionRoot = @(),
     [string]$ProjectMap,
-    [string[]]$OnlySource = @()
+    [string[]]$OnlySource = @(),
+    [ValidateRange(1048576,268435456)][int]$MaxLineBytes = 33554432
 )
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false, $true)
@@ -19,6 +20,21 @@ function Hash([string]$Value) {
     $sha = [Security.Cryptography.SHA256]::Create()
     try { ([BitConverter]::ToString($sha.ComputeHash($utf8.GetBytes($Value)))).Replace('-', '').ToLowerInvariant() }
     finally { $sha.Dispose() }
+}
+function ReadSegment($Stream,[int]$Initial,$Clock) {
+    $memory=[IO.MemoryStream]::new()
+    try {
+        $chunk=New-Object byte[] ([Math]::Min($Initial,$MaxLineBytes))
+        $read=$Stream.Read($chunk,0,$chunk.Length)
+        if ($read) {$memory.Write($chunk,0,$read)}
+        $found=($read -gt 0 -and [Array]::IndexOf($chunk,[byte]10,0,$read) -ge 0)
+        while ($read -gt 0 -and !$found -and $memory.Length -lt $MaxLineBytes -and $Clock.Elapsed.TotalSeconds -lt 12) {
+            $chunk=New-Object byte[] ([Math]::Min(65536,$MaxLineBytes-$memory.Length))
+            $read=$Stream.Read($chunk,0,$chunk.Length)
+            if ($read) {$memory.Write($chunk,0,$read);$found=([Array]::IndexOf($chunk,[byte]10,0,$read) -ge 0)}
+        }
+        return ,$memory.ToArray()
+    } finally {$memory.Dispose()}
 }
 function StableId([string]$Value) {
     [guid]::ParseExact((Hash $Value).Substring(0,32), 'N').ToString()
@@ -36,6 +52,12 @@ function RepoName($Value) {
     return $null
 }
 function PathKey($Value) { return ([string]$Value).Replace('\','/').TrimEnd('/').ToLowerInvariant() }
+function BusinessRepo($Repo) {
+    if (!$Repo) {return $null}
+    $roots=@($projectLinks | Where-Object {$_.repository -eq $Repo} | ForEach-Object {$_.project_key.ToLowerInvariant()} | Select-Object -Unique)
+    if ($roots.Count -eq 1) {return $roots[0]}
+    return $Repo
+}
 function ResolveProject($Payload,$Source) {
     $key=PathKey $Payload.cwd
     $original=RepoName $Payload.git.repository_url
@@ -46,7 +68,7 @@ function ResolveProject($Payload,$Source) {
         $url=& git -C $directory config --local --get remote.origin.url 2>$null
         $live=RepoName $url
     }
-    $choices=@(@($original,$cached,$live) | Where-Object {$_} | Select-Object -Unique)
+    $choices=@(@($original,$cached,$live) | Where-Object {$_} | ForEach-Object {BusinessRepo $_} | Select-Object -Unique)
     if ($choices.Count -gt 1) {$projectUnresolved.Add(@{source_id=$Source;reason='conflicting_repository_evidence'});return $original}
     if ($choices.Count) {
         if ($key) {$scanState.workspace_repositories | Add-Member -NotePropertyName $key -NotePropertyValue $choices[0] -Force}
@@ -87,11 +109,11 @@ function AssertScope($Path,$Plan) {
     }
     $sources=[Collections.Generic.List[string]]::new()
     foreach ($batch in $Plan.batches) {$sources.Add([string]$batch.cursor.source_id)}
-    foreach ($name in @('pulls.json','statuses.json','pr-request.json','status-request.json')) {
+    foreach ($name in @('pulls.json','repositories.json','statuses.json','pr-request.json','status-request.json')) {
         $file=Join-Path $Path $name
         if (!(Test-Path -LiteralPath $file)) {continue}
         $data=Get-Content -LiteralPath $file -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($name -eq 'pr-request.json') {$data=$data.pulls}
+        if ($name -eq 'pr-request.json') {$data=@($data.pulls)+@($data.repositories | Where-Object {$_})}
         if ($name -eq 'status-request.json') {$data=$data.statuses}
         foreach ($row in $data) {$sources.Add([string]$row.source_session_id)}
     }
@@ -116,6 +138,13 @@ if ($Action -eq 'Submit') {
         if ($pulls.Count -gt 50) {throw 'At most 50 checked PR records per request.'}
     }
     $prBodyPath=Join-Path $WorkDir 'pr-request.json'
+    [object[]]$repositories=@()
+    if (Test-Path -LiteralPath (Join-Path $WorkDir 'repositories.json')) {
+        $raw=Get-Content -LiteralPath (Join-Path $WorkDir 'repositories.json') -Raw -Encoding UTF8
+        if (!$raw.TrimStart().StartsWith('[')) {throw 'repositories.json must be an array.'}
+        $repositories=ConvertFrom-Json -InputObject $raw
+        if ($repositories.Count -gt 50) {throw 'At most 50 checked repository records per request.'}
+    }
     [object[]]$statuses=@()
     $statusFile=Join-Path $WorkDir 'statuses.json'
     $statusBodyPath=Join-Path $WorkDir 'status-request.json'
@@ -125,7 +154,7 @@ if ($Action -eq 'Submit') {
         $statuses=ConvertFrom-Json -InputObject $raw
         if ($statuses.Count -gt 50) {throw 'At most 50 status assessments per request.'}
     }
-    if ($pulls.Count -or (Test-Path -LiteralPath $prBodyPath) -or $statuses.Count -or (Test-Path -LiteralPath $statusBodyPath)) {
+    if ($pulls.Count -or $repositories.Count -or (Test-Path -LiteralPath $prBodyPath) -or $statuses.Count -or (Test-Path -LiteralPath $statusBodyPath)) {
         [void][IO.Directory]::CreateDirectory($StateDir)
         $pendingPath=Join-Path $StateDir ('.pulse-state-'+(Hash $Server.TrimEnd('/')).Substring(0,12)+'.json')
         $pending=if(Test-Path -LiteralPath $pendingPath){Get-Content -LiteralPath $pendingPath -Raw -Encoding UTF8 | ConvertFrom-Json}else{[pscustomobject]@{report_from=[DateTime]::UtcNow.AddDays(-7).ToString('yyyy-MM-ddTHH:mm:ssZ');next_index=0;pending_work=$null}}
@@ -147,14 +176,14 @@ if ($Action -eq 'Submit') {
             $end = $batch.cursor.to_offset
             if ($edit[0].summary -and $session -and $batch.cursor.from_offset -ne $end) {
                 $batch.summaries = @(@{summary_id=(StableId "codex:summary:${source}:$end"); session_id=$source;
-                    observed_at=$session.last_activity_at; summary=$edit[0].summary; summarizer_tool=$SummarizerTool; prompt_version='3.3.0'})
+                    observed_at=$session.last_activity_at; summary=$edit[0].summary; summarizer_tool=$SummarizerTool; prompt_version='3.4.0'})
             }
             if ($edit[0].goal -and $edit[0].milestones -and $session) {
                 $project = if ($session.repository) { $session.repository } else { $session.workspace_name }
                 if ($project) {
                     $batch.projects = @(@{report_id=(StableId "codex:project:${source}:${end}:$project"); source_session_id=$source;
                         project_key=$project; goal=$edit[0].goal; milestones=@($edit[0].milestones);
-                        observed_at=$session.last_activity_at; summarizer_tool=$SummarizerTool; prompt_version='3.3.0'})
+                        observed_at=$session.last_activity_at; summarizer_tool=$SummarizerTool; prompt_version='3.4.0'})
                 }
             }
         }
@@ -191,13 +220,19 @@ if ($Action -eq 'Submit') {
         if ($statusReceipt.status -ne 'committed' -or $statusReceipt.batch_id -ne $expected.batch_id -or $statusReceipt.statuses -ne @($expected.statuses).Count) {throw 'Unexpected status receipt.'}
     }
     $prReceipt=$null
-    if ($pulls.Count -or (Test-Path -LiteralPath $prBodyPath)) {
+    if ($pulls.Count -or $repositories.Count -or (Test-Path -LiteralPath $prBodyPath)) {
         $directory=Request '/api/v1/report-directory'
         if ('client_pr_ingest' -notin $directory.capabilities) {throw 'Server upgrade required: client_pr_ingest.'}
-        if (!(Test-Path -LiteralPath $prBodyPath)) {WriteJson $prBodyPath @{schema_version=1;batch_id=[guid]::NewGuid().ToString();sent_at=[DateTime]::UtcNow.ToString('o');pulls=$pulls}}
+        if ($repositories.Count -and 'multi_repository_projects' -notin $directory.capabilities) {throw 'Server upgrade required: multi_repository_projects (migration 011).'}
+        if (!(Test-Path -LiteralPath $prBodyPath)) {
+            $request=@{schema_version=1;batch_id=[guid]::NewGuid().ToString();sent_at=[DateTime]::UtcNow.ToString('o');pulls=$pulls}
+            if ($repositories.Count) {$request.repositories=$repositories}
+            WriteJson $prBodyPath $request
+        }
         $expected=Get-Content -LiteralPath $prBodyPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $prReceipt=Request '/api/v1/report-pulls' $prBodyPath
         if ($prReceipt.status -ne 'committed' -or $prReceipt.batch_id -ne $expected.batch_id -or $prReceipt.pulls -ne @($expected.pulls).Count) {throw 'Unexpected PR receipt.'}
+        if ($null -ne $expected.repositories -and ($null -eq $prReceipt.repositories -or $prReceipt.repositories -ne @($expected.repositories).Count)) {throw 'Unexpected repository receipt.'}
     }
     $finishedPath=Join-Path $StateDir ('.pulse-state-'+(Hash $Server.TrimEnd('/')).Substring(0,12)+'.json')
     if ($alreadyCommitted -eq 0 -and (Test-Path -LiteralPath $finishedPath)) {
@@ -215,6 +250,7 @@ if ((Test-Path -LiteralPath (Join-Path $StateDir '.pulse-project-selection.json'
 if (Test-Path -LiteralPath $WorkDir) { throw 'Prepare requires a new working directory.' }
 [void][IO.Directory]::CreateDirectory($WorkDir)
 $directory=Request '/api/v1/report-directory'
+$projectLinks=$directory.project_repositories
 if ($directory.protocol_version -lt 3) { throw 'Server upgrade required: protocol 3 usage receipts.' }
 if ($GitHubLogin) {
     if ($GitHubLogin -notmatch '^[a-zA-Z0-9-]{1,39}$') { throw 'Invalid GitHub login.' }
@@ -299,21 +335,11 @@ foreach ($file in $files) {
         # Recent Codex builds can emit a session_meta line larger than 16 KiB
         # because it includes the resolved instruction set. Keep this bounded,
         # while allowing the first JSONL record to be decoded reliably.
-        $headStream=[IO.MemoryStream]::new()
-        try {
-            $found=$false
-            while (!$found -and $bytesRead -lt 1048576) {
-                $chunk=New-Object byte[] ([Math]::Min(4096,1048576-$bytesRead))
-                $read=$stream.Read($chunk,0,$chunk.Length)
-                if (!$read) { break }
-                $bytesRead+=$read; $headStream.Write($chunk,0,$read)
-                $found=([Array]::IndexOf($chunk,[byte]10,0,$read) -ge 0)
-            }
-            $head=$headStream.ToArray(); $n=$head.Length
-        } finally { $headStream.Dispose() }
+        $head=ReadSegment $stream 4096 $scanClock
+        $n=$head.Length;$bytesRead+=$n
         if ($n -eq 0) { continue }
         $lf = [Array]::IndexOf($head,[byte]10,0,$n)
-        if ($lf -lt 0) { $skips[[string]$checked]='metadata_exceeds_budget_or_incomplete'; continue }
+        if ($lf -lt 0) { $skips[[string]$checked]=if($n -ge $MaxLineBytes){'line_exceeds_max_line_bytes'}else{'metadata_incomplete'}; continue }
         $meta = $utf8.GetString($head,0,$lf) | ConvertFrom-Json
         $source = ([string]$meta.payload.id).ToLowerInvariant()
         if ($OnlySource.Count -and $source -notin $OnlySource) {continue}
@@ -338,7 +364,7 @@ foreach ($file in $files) {
             }
             if ($resolvedRepo -and $cursor.session_exists -and $cursor.project_key -ne $resolvedRepo) {
                 if ('project_mapping_backfill' -in $directory.capabilities) {
-                    $batches+=@{schema_version=1;batch_id=[guid]::NewGuid().ToString();sent_at=[DateTime]::UtcNow.ToString('o');collector_version='3.3.0';
+                    $batches+=@{schema_version=1;batch_id=[guid]::NewGuid().ToString();sent_at=[DateTime]::UtcNow.ToString('o');collector_version='3.4.0';
                         sessions=@();agents=@();summaries=@();projects=@();usage=@();mappings=@(@{session_id=$source;repository=$resolvedRepo});
                         cursor=@{source_id=$source;from_offset=$from;to_offset=$from;context=$cursor.context}}
                 } else {$projectUnresolved.Add(@{source_id=$source;reason='server_project_mapping_upgrade_required'})}
@@ -346,10 +372,11 @@ foreach ($file in $files) {
             $unchanged++; continue
         }
         if ($stream.Length -lt $from) { $skips[[string]$checked]='file_truncated'; continue }
-        $buffer = New-Object byte[] ([Math]::Min($stream.Length-$from,1048576-$bytesRead))
         [void]$stream.Seek($from,'Begin')
-        $n = $stream.Read($buffer,0,$buffer.Length)
-        $bytesRead += $n
+        $initial=[Math]::Min($stream.Length-$from,[Math]::Max(4096,1048576-$bytesRead))
+        $buffer=ReadSegment $stream $initial $scanClock
+        $n=$buffer.Length;$bytesRead+=$n
+        if ($n -ge $MaxLineBytes -and [Array]::IndexOf($buffer,[byte]10) -lt 0) {$skips[[string]$checked]='line_exceeds_max_line_bytes'}
         $end = $from
         $model = $cursor.context.model
         $counts = $cursor.context
@@ -362,9 +389,10 @@ foreach ($file in $files) {
         $notes = @()
         $main = StableId "codex:agent:$source"
         $lineStart = 0
-        for ($i=0; $i -lt $n; $i++) {
-            if (($i % 4096) -eq 0 -and $scanClock.Elapsed.TotalSeconds -ge 12) { break }
-            if ($buffer[$i] -ne 10) { continue }
+        while ($lineStart -lt $n) {
+            if ($scanClock.Elapsed.TotalSeconds -ge 12) { break }
+            $i=[Array]::IndexOf($buffer,[byte]10,$lineStart)
+            if ($i -lt 0) {break}
             try { $row = $utf8.GetString($buffer,$lineStart,$i-$lineStart) | ConvertFrom-Json }
             catch { $skips[[string]$checked]='invalid_log_line'; break }
             $position = $from+$lineStart
@@ -450,7 +478,7 @@ foreach ($file in $files) {
             }
         }
         $batches += @{schema_version=1; batch_id=[guid]::NewGuid().ToString(); sent_at=[DateTime]::UtcNow.ToString('o');
-            collector_version='3.3.0'; sessions=$sessions; agents=$agents; summaries=@(); usage=$usage; projects=@();
+            collector_version='3.4.0'; sessions=$sessions; agents=$agents; summaries=@(); usage=$usage; projects=@();
             cursor=@{source_id=$source; from_offset=$from; to_offset=$end; context=@{model=$model;
                 report_from=$reportFrom;input_tokens=$counts.input_tokens; cached_input_tokens=$counts.cached_input_tokens; output_tokens=$counts.output_tokens}}}
     } finally { $stream.Dispose() }
@@ -460,5 +488,5 @@ if ($batches.Count) { $scanState.pending_work=$WorkDir }
 WriteJson $planPath @{batches=$batches; allowed_sources=@($OnlySource);bytes_read=$bytesRead; backlog=$backlog;label=$Label;github_login=$GitHubLogin}
 WriteJson ($statePath+'.tmp') $scanState
 Move-Item -Force -LiteralPath ($statePath+'.tmp') -Destination $statePath
-@{collector_version='3.3.0';server=$Server;prepared_batches=$batches.Count;usage=(UsageTotals @($batches | ForEach-Object {$_.usage})); bytes_read=$bytesRead; backlog=$backlog;
+@{collector_version='3.4.0';server=$Server;prepared_batches=$batches.Count;usage=(UsageTotals @($batches | ForEach-Object {$_.usage})); bytes_read=$bytesRead; backlog=$backlog;
     diagnostics=@{checked_files=$checked;cursor_queries=$cursorQueries;unchanged_files=$unchanged;excluded_files=$excluded;project_unresolved=@($projectUnresolved.ToArray());session_roots_found=$roots.Count;discovery_checked=$discoveryChecked;discovery_incomplete=($queue.Count -gt 0);recovery_unverified=$scanState.recovery_unverified;initial_snapshots=$initialSnapshots;counter_resets=$counterResets;unmeasured_snapshots=$unmeasured;skipped=$skips}; evidence=$evidence} | ConvertTo-Json -Depth 20 -Compress

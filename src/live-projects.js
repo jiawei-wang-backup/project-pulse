@@ -33,7 +33,7 @@ export function renderProjectDocuments(items,{esc,icon,date,projectName,safeGith
   return [...groups].map(([name,rows],index)=>`<details class="live-session-group live-doc-group" ${index===0?'open':''}>
     <summary><span class="live-session-group-name">${icon('folder')}<strong>${esc(projectName(name))}</strong><span class="section-count">${rows.length}</span></span><span class="live-session-group-latest">${rows.filter(row=>row.is_draft).length} 份草稿</span>${icon('down','live-session-group-chevron')}</summary>
     <div class="live-doc-rows">${rows.map(row=>{
-      const link=safeGithub(row.url),label=`#${row.number} ${row.title}`;
+      const link=safeGithub(row.url),label=`${row.repository_full_name ? row.repository_full_name+' ' : ''}#${row.number} ${row.title}`;
       const state={open:'开放中',closed:'已关闭',merged:'已合并'}[row.state]||row.state||'—';
       return `<div class="live-doc-row"><span class="live-doc-icon">${icon('document')}</span><div><strong>${link?`<a href="${esc(link)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`:esc(label)}</strong><span>${esc(state)}</span></div>${row.is_draft?'<span class="status-badge tone-amber">草稿</span>':''}<time>${date(row.updated_at)}</time></div>`;
     }).join('')}</div></details>`).join('');
