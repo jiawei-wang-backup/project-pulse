@@ -6,7 +6,7 @@
 
 ## 下载上报包
 
-**[下载最新上报 ZIP：project-pulse-report-latest.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/latest/download/project-pulse-report-latest.zip)**
+**[下载最新上报 ZIP：project-pulse-report-3.1.1.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.1.1-20261116-r2/project-pulse-report-3.1.1.zip)**
 
 当前版本：**3.1.1**。
 
@@ -76,6 +76,6 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，执�
 - Node.js 24+，运行 `npm ci` 和 `npm start`；未配置数据库时默认在 `http://127.0.0.1:4174` 展示演示数据。
 - 真实数据使用 PostgreSQL；迁移、局域网部署、备份及独立令牌模式见 [服务端部署说明](docs/deployment.md)。
 - `npm test` 运行测试；在可丢弃的已迁移数据库设置 `DATABASE_URL` 后运行 `npm run test:integration`。便携采集器 CI 覆盖 macOS、Windows 和 Ubuntu。
-- 构建上报包：`sh ops/report/build-package.sh /绝对路径/project-pulse-report-latest.zip`。包内不包含本机状态、路径映射、日志或凭证。
+- 构建上报包：`sh ops/report/build-package.sh /绝对路径/project-pulse-report-3.1.1.zip`。包内不包含本机状态、路径映射、日志或凭证。
 
 [技术方案](技术方案.md) · [上报详细流程](ops/report/README.md) · [手动协议及其他来源适配](docs/lan-report.md)
