@@ -154,12 +154,12 @@ if ($action eq 'Submit') {
         my $project = $session ? ($session->{repository} // $session->{workspace_name}) : undef;
         if ($session && $edit->{summary}) {
             $batch->{summaries} = [{summary_id=>id("codex:summary:$source:$end"),session_id=>$source,
-                observed_at=>$session->{last_activity_at},summary=>$edit->{summary},summarizer_tool=>$tool,prompt_version=>'2.1.0'}];
+                observed_at=>$session->{last_activity_at},summary=>$edit->{summary},summarizer_tool=>$tool,prompt_version=>'3.1.0'}];
         }
         if ($project && $edit->{goal} && $edit->{milestones}) {
             $batch->{projects} = [{report_id=>id("codex:project:$source:$end:$project"),source_session_id=>$source,
                 project_key=>$project,goal=>$edit->{goal},milestones=>$edit->{milestones},
-                observed_at=>$session->{last_activity_at},summarizer_tool=>$tool,prompt_version=>'2.1.0'}];
+                observed_at=>$session->{last_activity_at},summarizer_tool=>$tool,prompt_version=>'3.1.0'}];
         }
         my $body = "$work/$batch->{batch_id}.json";
         write_json($body,$batch) unless -e $body;
@@ -348,7 +348,7 @@ for my $entry (@files) {
         }
         if ($resolved_repo && $cursor->{session_exists} && ($cursor->{project_key}//'') ne $resolved_repo) {
             if (grep {$_ eq 'project_mapping_backfill'} @{$directory->{capabilities}//[]}) {
-                push @batches,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),collector_version=>'3.0.0',
+                push @batches,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),collector_version=>'3.1.0',
                     sessions=>[],agents=>[],summaries=>[],projects=>[],usage=>[],
                     mappings=>[{session_id=>$source,repository=>$resolved_repo}],
                     cursor=>{source_id=>$source,from_offset=>$from,to_offset=>$from,context=>$cursor->{context}}};
@@ -444,7 +444,7 @@ for my $entry (@files) {
         }
     }
     my $batch_id = uuid4();
-    push @batches,{schema_version=>1,batch_id=>$batch_id,sent_at=>now(),collector_version=>'3.0.0',
+    push @batches,{schema_version=>1,batch_id=>$batch_id,sent_at=>now(),collector_version=>'3.1.0',
         sessions=>\@sessions,agents=>\@agents,summaries=>[],projects=>[],usage=>\@usage,
         cursor=>{source_id=>$source,from_offset=>$from,to_offset=>$end,
             context=>{model=>$model,report_from=>$source_cutoff,map { $_=>$context->{$_} } @counts}}};
@@ -458,7 +458,7 @@ $scan_state->{next_index}=($scan_state->{next_index}//0)+$checked;
 $scan_state->{pending_work}=$work if @batches;
 write_json($plan_file,{batches=>\@batches,bytes_read=>$bytes,backlog=>$backlog,label=>$label,github_login=>$github_login});
 write_json("$state_file.tmp",$scan_state); rename "$state_file.tmp",$state_file or die "Cannot persist scan progress\n";
-print $json->encode({collector_version=>'3.0.0',server=>$server,prepared_batches=>scalar @batches,usage=>usage_totals([map {@{$_->{usage}}} @batches]),
+print $json->encode({collector_version=>'3.1.0',server=>$server,prepared_batches=>scalar @batches,usage=>usage_totals([map {@{$_->{usage}}} @batches]),
     bytes_read=>$bytes,backlog=>$backlog,diagnostics=>$diagnostics,evidence=>\@evidence}),"\n";
 sub min { $_[0]<$_[1] ? $_[0] : $_[1] }
 
