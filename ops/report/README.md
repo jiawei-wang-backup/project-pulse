@@ -54,6 +54,16 @@ macOS 对应命令：
 
 ## PR与未识别项核对
 
+## Codex更新、换号与会话目录迁移
+
+每轮Prepare检查当前 `CODEX_HOME`、当前用户默认 `.codex`、`.codex-*`／`.codex_*`、`.config/codex`，以及系统Codex候选目录（macOS Application Support、Windows APPDATA／LOCALAPPDATA），并复用状态文件里已经发现的sessions根目录。候选位置不保证每个Codex版本都会使用；只在Codex候选容器内检查最多64个目录、最多4层，跳过目录链接，不全盘搜索。根目录内部仍按当前已验证的日期层级JSONL格式解析；未来格式改变需要明确诊断后适配，不能猜字段。
+
+用户确认的新位置可通过macOS `--session-root "/绝对路径/sessions"`（可重复）或Windows `-SessionRoot 'C:\实际路径\sessions'`传入Prepare，之后自动记住。路径只留在本地隐藏状态，不上传到服务端；更新包时保留状态。换Codex账号不会改变设备指纹或团队成员身份，成员变更必须另行确认。
+
+跨目录复制／迁移时，优先读取同原生会话ID的较完整副本，按原ID和服务端字节游标续传，不按文件路径新建会话。相同ID但首行元数据变化会返回 `source_header_changed_requires_confirmation`，需要确认后诊断，禁止清空游标或直接重复导入。`session_roots_found: 0`、无日志、`discovery_incomplete: true`或文件格式未识别都不等于没有Token用量：上报可确认部分后，必须反问用户是否更新／换号以及当前会话目录。
+
+## PR与字段完整性检查
+
 每轮上报后必须按本轮涉及项目核对以下清单（即使上传成功也不能省略）：
 
 1. 仓库：从授权Git remote取得规范 `owner/repo`，与服务端目录的repositories及Dashboard项目键对照。未登记仓库标为“未登记”，本地目录无法确定远端则标为“映射未识别”。不按相似项目名猜测。

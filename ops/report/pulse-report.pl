@@ -9,13 +9,16 @@ use Time::HiRes qw(time);
 use Encode qw(encode_utf8);
 use FindBin;
 use File::Path qw(make_path);
+use Cwd qw(abs_path);
 
 my ($state_dir,$github_login,$resolve_git) = ($FindBin::Bin,undef,0);
+my @session_roots;
 my ($action,$work,$server,$label,$exclude,$include,$tool) =
   ('Prepare',undef,'http://192.168.16.70:4185',undef,undef,0,'codex');
 GetOptions('action=s'=>\$action,'work-dir=s'=>\$work,'server=s'=>\$server,'label=s'=>\$label,
     'exclude-session-id=s'=>\$exclude,'include-evidence'=>\$include,'summarizer-tool=s'=>\$tool,
-    'state-dir=s'=>\$state_dir,'github-login=s'=>\$github_login,'resolve-git'=>\$resolve_git) or die "Invalid options\n";
+    'state-dir=s'=>\$state_dir,'github-login=s'=>\$github_login,'resolve-git'=>\$resolve_git,
+    'session-root=s@'=>\@session_roots) or die "Invalid options\n";
 die "Expected Prepare or Submit and --work-dir\n" unless $work && $action =~ /\A(?:Prepare|Submit)\z/;
 die "Invalid tool ID\n" unless $tool =~ /\A[a-z][a-z0-9_]{0,63}\z/;
 $server =~ s{/$}{};
@@ -153,9 +156,28 @@ if ($scan_state->{pending_work} && -f "$scan_state->{pending_work}/plan.json") {
     delete $scan_state->{pending_work};
 }
 my %known=map {lc($_->{source_id})=>1} @{$directory->{sources}//[]};
-my $root = ($ENV{CODEX_HOME} // "$ENV{HOME}/.codex") . '/sessions';
+my @containers=grep {defined && length} ($ENV{CODEX_HOME},
+    "$ENV{HOME}/.codex","$ENV{HOME}/.config/codex", "$ENV{HOME}/Library/Application Support/Codex",
+    defined $ENV{XDG_DATA_HOME} ? "$ENV{XDG_DATA_HOME}/codex" : undef,
+    entries($ENV{HOME},qr/\A\.codex[-_].+\z/));
+my @discovered;
+my @queue=map {[$_,0]} @containers;
+my $discovery_checked=0;
+while (@queue && $discovery_checked<64) {
+    my ($path,$depth)=@{shift @queue};
+    next unless -d $path && !-l $path;
+    $discovery_checked++;
+    if ($path =~ m{(?:^|/)sessions\z}) { push @discovered,$path; next }
+    next if $depth>=4;
+    push @queue,map {[$_,$depth+1]} grep {-d $_ && !-l $_} entries($path,qr/\A[^.]|\A\.codex/);
+}
+my %root_seen;
+my @roots=grep {defined && -d $_ && !$root_seen{$_}++}
+    map {abs_path($_)} (@session_roots,@{$scan_state->{session_roots}//[]},@discovered);
+$scan_state->{session_roots}=\@roots;
 my $cutoff = $scan_state->{report_from};
 my @files;
+for my $root (@roots) {
 for my $year (entries($root,qr/\A[0-9]{4}\z/)) {
     next if -l $year;
     for my $month (entries($year,qr/\A[0-9]{2}\z/)) {
@@ -171,7 +193,10 @@ for my $year (entries($root,qr/\A[0-9]{4}\z/)) {
         }
     }
 }
-@files = sort { $a->[0] cmp $b->[0] } @files;
+}
+# Prefer the fullest copy after migration. Native source IDs and server cursors
+# remain stable across root changes, so copied history isn't charged twice.
+@files = sort { (-s $b->[0]) <=> (-s $a->[0]) || $a->[0] cmp $b->[0] } @files;
 if (@files) {
     my $start = ($scan_state->{next_index}//0) % @files;
     push @files,splice @files,0,$start;
@@ -201,6 +226,11 @@ for my $entry (@files) {
     my $p = $meta->{payload};
     my $source = lc($p->{id} // '');
     next unless $source =~ $uuid;
+    my $head_hash=sha256_hex($first);
+    if (defined $scan_state->{source_headers}{$source} && $scan_state->{source_headers}{$source} ne $head_hash) {
+        $skips{$checked}='source_header_changed_requires_confirmation'; next;
+    }
+    $scan_state->{source_headers}{$source}=$head_hash;
     if ($scan_state->{excluded}{$source}) { $excluded++; next }
     if (($exclude // '') eq $source || $p->{parent_thread_id} || (ref($p->{source}) eq 'HASH' && $p->{source}{subagent})) { $excluded++; next }
     if ($seen{$source}++) { $skips{$checked}='duplicate_source'; next }
@@ -310,6 +340,7 @@ for my $entry (@files) {
             context=>{model=>$model,report_from=>$source_cutoff,map { $_=>$context->{$_} } @counts}}};
 }
 my $diagnostics={checked_files=>$checked,cursor_queries=>$cursor_queries,unchanged_files=>$unchanged,excluded_files=>$excluded,
+    session_roots_found=>scalar @roots,discovery_checked=>$discovery_checked,discovery_incomplete=>(@queue ? JSON::PP::true : JSON::PP::false),
     recovery_unverified=>$scan_state->{recovery_unverified}//JSON::PP::false,
     initial_snapshots=>$baseline_events,counter_resets=>$reset_events,unmeasured_snapshots=>$unmeasured,skipped=>\%skips};
 $scan_state->{next_index}=($scan_state->{next_index}//0)+$checked;

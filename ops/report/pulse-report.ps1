@@ -8,7 +8,8 @@ param(
     [switch]$IncludeEvidence,
     [string]$StateDir = $PSScriptRoot,
     [string]$GitHubLogin,
-    [switch]$ResolveGit
+    [switch]$ResolveGit,
+    [string[]]$SessionRoot = @()
 )
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false, $true)
@@ -133,11 +134,31 @@ if ($scanState.pending_work -and (Test-Path -LiteralPath (Join-Path $scanState.p
     $scanState.pending_work=$null
 }
 $known=@{}; foreach ($s in $directory.sources) { $known[$s.source_id]=$true }
-$root = if ($env:CODEX_HOME) { Join-Path $env:CODEX_HOME 'sessions' } else { Join-Path $HOME '.codex/sessions' }
+$containers=@((Join-Path $env:USERPROFILE '.codex'),(Join-Path $env:USERPROFILE '.config/codex'))
+if ($env:CODEX_HOME) { $containers+= $env:CODEX_HOME }
+if ($env:APPDATA) { $containers+= (Join-Path $env:APPDATA 'Codex') }
+if ($env:LOCALAPPDATA) { $containers+= (Join-Path $env:LOCALAPPDATA 'Codex') }
+$containers+=@(Get-ChildItem -LiteralPath $env:USERPROFILE -Directory -ErrorAction SilentlyContinue | Where-Object {$_.Name -match '^\.codex[-_]'} | ForEach-Object {$_.FullName})
+$queue=[Collections.Queue]::new(); foreach ($container in $containers) {$queue.Enqueue(@{path=$container;depth=0})}
+$discovered=@();$discoveryChecked=0
+while ($queue.Count -and $discoveryChecked -lt 64) {
+    $item=$queue.Dequeue()
+    $folder=Get-Item -LiteralPath $item.path -ErrorAction SilentlyContinue
+    if (!$folder -or !$folder.PSIsContainer -or ($folder.Attributes -band [IO.FileAttributes]::ReparsePoint)) {continue}
+    $discoveryChecked++
+    if ($folder.Name -eq 'sessions') {$discovered+=$folder.FullName;continue}
+    if ($item.depth -ge 4) {continue}
+    foreach ($child in @(Get-ChildItem -LiteralPath $folder.FullName -Directory -ErrorAction SilentlyContinue)) {
+        if (!($child.Attributes -band [IO.FileAttributes]::ReparsePoint)) {$queue.Enqueue(@{path=$child.FullName;depth=($item.depth+1)})}
+    }
+}
+$roots=@(@($SessionRoot)+@($scanState.session_roots)+@($discovered) | Where-Object {$_ -and (Test-Path -LiteralPath $_ -PathType Container)} | ForEach-Object {[IO.Path]::GetFullPath($_)} | Select-Object -Unique)
+$scanState | Add-Member -NotePropertyName session_roots -NotePropertyValue $roots -Force
+if (!$scanState.source_headers) {$scanState | Add-Member -NotePropertyName source_headers -NotePropertyValue ([pscustomobject]@{}) -Force}
 $cutoff = ([DateTimeOffset]$scanState.report_from).UtcDateTime
-$files = @(Get-ChildItem -Path (Join-Path $root '*/*/*/*.jsonl') -File -ErrorAction SilentlyContinue |
+$files = @($roots | ForEach-Object {Get-ChildItem -Path (Join-Path $_ '*/*/*/*.jsonl') -File -ErrorAction SilentlyContinue} |
     Where-Object { ($_.LastWriteTimeUtc -ge $cutoff -or ($_.Name -match '([a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})' -and $known[$Matches[1]])) -and !($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
-    Sort-Object LastWriteTimeUtc,FullName)
+    Sort-Object @{Expression={$_.Length};Descending=$true},FullName)
 # Rotate the bounded scan so unchanged files cannot permanently hide later files.
 if ($files.Count) {
     $start = [int]($scanState.next_index % $files.Count)
@@ -176,10 +197,15 @@ foreach ($file in $files) {
         $lf = [Array]::IndexOf($head,[byte]10,0,$n)
         if ($lf -lt 0) { $skips[[string]$checked]='metadata_exceeds_budget_or_incomplete'; continue }
         $meta = $utf8.GetString($head,0,$lf) | ConvertFrom-Json
-        $source = [string]$meta.payload.id
+        $source = ([string]$meta.payload.id).ToLowerInvariant()
         if ($meta.type -ne 'session_meta' -or $source -notmatch '^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$' -or
             $meta.payload.source.subagent -or $meta.payload.parent_thread_id -or $source -eq $ExcludeSessionId -or
             $source -in $scanState.excluded) { $excluded++; continue }
+        $headHash=Hash ($utf8.GetString($head,0,$lf))
+        if ($scanState.source_headers.$source -and $scanState.source_headers.$source -ne $headHash) {
+            $skips[[string]$checked]='source_header_changed_requires_confirmation';continue
+        }
+        $scanState.source_headers | Add-Member -NotePropertyName $source -NotePropertyValue $headHash -Force
         if ($seenSources.ContainsKey($source)) { $skips[[string]$checked]='duplicate_source'; continue }
         $seenSources[$source] = $true
         $cursor = Request "/api/v1/report-cursor?source_id=$source"
@@ -307,4 +333,4 @@ WriteJson $planPath @{batches=$batches; bytes_read=$bytesRead; backlog=$backlog;
 WriteJson ($statePath+'.tmp') $scanState
 Move-Item -Force -LiteralPath ($statePath+'.tmp') -Destination $statePath
 @{collector_version='3.0.0';server=$Server;prepared_batches=$batches.Count;usage=(UsageTotals @($batches | ForEach-Object {$_.usage})); bytes_read=$bytesRead; backlog=$backlog;
-    diagnostics=@{checked_files=$checked;cursor_queries=$cursorQueries;unchanged_files=$unchanged;excluded_files=$excluded;recovery_unverified=$scanState.recovery_unverified;initial_snapshots=$initialSnapshots;counter_resets=$counterResets;unmeasured_snapshots=$unmeasured;skipped=$skips}; evidence=$evidence} | ConvertTo-Json -Depth 20 -Compress
+    diagnostics=@{checked_files=$checked;cursor_queries=$cursorQueries;unchanged_files=$unchanged;excluded_files=$excluded;session_roots_found=$roots.Count;discovery_checked=$discoveryChecked;discovery_incomplete=($queue.Count -gt 0);recovery_unverified=$scanState.recovery_unverified;initial_snapshots=$initialSnapshots;counter_resets=$counterResets;unmeasured_snapshots=$unmeasured;skipped=$skips}; evidence=$evidence} | ConvertTo-Json -Depth 20 -Compress

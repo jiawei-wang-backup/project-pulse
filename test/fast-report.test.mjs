@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {networkInterfaces,tmpdir} from 'node:os';
-import {mkdtemp,mkdir,writeFile,readFile,rm,utimes} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,rm,utimes,copyFile} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
@@ -18,6 +18,8 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
   const logs=join(root,'codex','sessions','2026','01','01');
   const state=join(root,'state');
   await mkdir(logs,{recursive:true});
+  await mkdir(join(root,'home'));
+  let activeHome=join(root,'codex');
   const cursors=new Map(); let committed=0; let rejectNext=false; let corruptReceipt=false;
   const totals={input_tokens:0,cached_input_tokens:0,output_tokens:0};
   const server=http.createServer(async(req,res)=>{
@@ -50,7 +52,9 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
     const script=resolve('ops/report',windows?'pulse-report.ps1':'pulse-report.pl');
     const args=windows?['-NoProfile','-ExecutionPolicy','Bypass','-File',script,'-Action',action,'-WorkDir',work,'-StateDir',state,'-Server',origin]
       :[script,'--action',action,'--work-dir',work,'--state-dir',state,'--server',origin];
-    const output=await run(windows?'powershell.exe':'/usr/bin/perl',args,{env:{...process.env,CODEX_HOME:join(root,'codex')},maxBuffer:1024*1024});
+    const output=await run(windows?'powershell.exe':'/usr/bin/perl',args,{env:{...process.env,CODEX_HOME:activeHome,
+      HOME:join(root,'home'),USERPROFILE:join(root,'home'),APPDATA:join(root,'home','AppData','Roaming'),
+      LOCALAPPDATA:join(root,'home','AppData','Local'),XDG_DATA_HOME:join(root,'home','.local','share')},maxBuffer:1024*1024});
     return JSON.parse(output.stdout);
   };
   const at=new Date().toISOString();
@@ -115,6 +119,24 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
     const oldWork=join(root,'old');
     assert.equal((await invoke('Prepare',oldWork)).usage.input_tokens,2);
     await invoke('Submit',oldWork);
+    // Updating CODEX_HOME / switching an account preserves cursors across copied logs.
+    activeHome=join(root,'home','.codex-new','accounts','account-b');
+    const migrated=join(activeHome,'sessions','2026','01','01');
+    await mkdir(migrated,{recursive:true});
+    const migratedFile=join(migrated,`${source}.jsonl`);
+    await copyFile(file,migratedFile);
+    const original=await readFile(migratedFile,'utf8');
+    await writeFile(migratedFile,original+JSON.stringify(token(20,5,5))+'\n');
+    const migratedWork=join(root,'migrated');
+    const migration=await invoke('Prepare',migratedWork);
+    assert.ok(migration.diagnostics.session_roots_found>=2);
+    assert.equal(migration.usage.input_tokens,9);
+    await invoke('Submit',migratedWork);
+    // A nonstandard account directory is found even after CODEX_HOME is unset.
+    activeHome='';
+    const rediscovered=await invoke('Prepare',join(root,'rediscovered'));
+    assert.ok(rediscovered.diagnostics.session_roots_found>=2);
+    assert.equal(rediscovered.usage.events,0);
   } finally {
     await new Promise(resolve=>server.close(resolve));
     await rm(root,{recursive:true,force:true});

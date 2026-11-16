@@ -10,6 +10,8 @@ PROJECT_PULSE_AUTOMATION。
 
 允许脚本仅为这些授权会话只读查询其工作目录的 Git remote 来识别项目，使用 ResolveGit 选项。先查询团队目录，已知且由用户确认的 GitHub 账号使用 GitHubLogin 选项；不能按仓库拥有者或提交作者认定成员，无法确认时询问账号或姓名，无人值守时沿用已保存身份。工作目录使用本包 .pulse-pending 下的随机新子目录，失败保留以便下轮自动重试，不把状态文件放进临时目录，不清空已确认游标。
 
+Codex更新、换号或迁移后不能假定日志仍在旧目录。每轮使用脚本的有界目录发现：当前CODEX_HOME、当前用户默认目录、已确认的历史根目录以及Codex候选账号目录。不同目录里的同一原生会话ID沿用同一游标，不能按路径或当前Codex登录账号重新生成设备／会话标识；Codex订阅账号切换也不自动改变团队成员。核对diagnostics.session_roots_found和discovery_incomplete；根目录为0、没有可读日志、目录扫描未完成或source_header_changed_requires_confirmation时，先上报已确认数据，再明确反问“Codex是否更新／换号／迁移？请提供当前CODEX_HOME或会话sessions目录”，不得报告零消耗或全部同步完成。用户确认的新根目录用SessionRoot／--session-root传入Prepare并持久化；不搜索其他用户目录或读取登录凭证。
+
 必须通过固定脚本增量上传 Token 消耗：模型、输入 Token（input_tokens）、缓存输入 Token（cached_input_tokens）、输出 Token（output_tokens），并保留事件时间与会话关联。用量必须取自授权日志，通过服务端游标计算差分，禁止估算、编造或重复累计。即使本轮没有新的摘要或里程碑，也必须提交新增 Token 用量，不能只上传项目总结。
 
 必须执行 README.md 的“PR与未识别项核对”：逐项目核对规范GitHub仓库、服务端是否已登记、Dashboard.pulls中的PR归属。服务端未显示PR不能据此写“没有PR”；区分已识别、确认没有、未识别、已识别但未同步、权限不足、尚未检查。已有GitHub只读工具且授权可用时，可限量核对open／closed／merged／draft状态；未查到或不可访问就如实记录。客户端固定脚本不上传PR，不能声称PR已同步；PR入库仍由服务端同步流程负责。
