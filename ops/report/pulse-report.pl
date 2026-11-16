@@ -9,7 +9,7 @@ use Time::HiRes qw(time);
 use Encode qw(encode_utf8);
 
 my ($action,$work,$server,$label,$exclude,$include,$tool) =
-  ('Prepare',undef,'http://172.16.30.104:4185',undef,undef,0,'codex');
+  ('Prepare',undef,'http://192.168.16.70:4185',undef,undef,0,'codex');
 GetOptions('action=s'=>\$action,'work-dir=s'=>\$work,'server=s'=>\$server,'label=s'=>\$label,
     'exclude-session-id=s'=>\$exclude,'include-evidence'=>\$include,'summarizer-tool=s'=>\$tool) or die "Invalid options\n";
 die "Expected Prepare or Submit and --work-dir\n" unless $work && $action =~ /\A(?:Prepare|Submit)\z/;

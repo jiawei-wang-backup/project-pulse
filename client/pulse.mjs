@@ -392,7 +392,10 @@ async function flush() {
   let sent=0;
   if(pending().length) {
     const url=new URL(process.env.PULSE_SERVER_URL || config.server_url);
-    if(url.protocol!=='https:' && !(url.protocol==='http:' && ['localhost','127.0.0.1','[::1]'].includes(url.hostname))) throw new Error('https_required');
+    const loopback=['localhost','127.0.0.1','[::1]'].includes(url.hostname);
+    const privateLan=/^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(url.hostname);
+    const allowedHttp=url.protocol==='http:' && (loopback || (config.allow_lan_http===true && privateLan));
+    if(url.protocol!=='https:' && !allowedHttp) throw new Error('https_required');
     const deviceToken=process.env.PULSE_DEVICE_TOKEN || config.device_token;
     if(typeof deviceToken!=='string' || !/^[A-Za-z0-9._~-]+$/.test(deviceToken)) throw new Error('invalid_device_token');
     for(const batch of pending().slice(0,2)) {

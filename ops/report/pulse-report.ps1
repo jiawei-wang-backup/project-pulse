@@ -1,7 +1,7 @@
 param(
     [ValidateSet('Prepare','Submit')][string]$Action = 'Prepare',
     [Parameter(Mandatory=$true)][string]$WorkDir,
-    [string]$Server = 'http://172.16.30.104:4185',
+    [string]$Server = 'http://192.168.16.70:4185',
     [string]$Label,
     [string]$ExcludeSessionId,
     [string]$SummarizerTool = 'codex',

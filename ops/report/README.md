@@ -4,7 +4,7 @@
 
 > PROJECT_PULSE_AUTOMATION。读取当前目录的 README.md，立即按快速流程上报一次，只采集我授权的 Codex 会话，允许生成脱敏摘要和里程碑。试报成功后，请直接为这台电脑创建并启用「Project Pulse 每30分钟上报」本机任务，每 30 分钟在这个目录运行。已有相同用途的任务就更新并启用，避免重复创建。完成后分别告诉我试报结果和任务状态。
 
-macOS 使用系统 Perl 和 curl，Windows 使用系统 PowerShell 和 curl.exe。局域网地址默认为 172.16.30.104:4185，免手填令牌。其他机器应在同一可信局域网。Linux、Claude Code 日志以及历史里程碑补报可用包内的 lan-report.md。两端快速路径当前采集 Codex 主会话。
+macOS 使用系统 Perl 和 curl，Windows 使用系统 PowerShell 和 curl.exe。局域网地址固定为 `http://192.168.16.70:4185`，免手填令牌。其他机器应在同一可信局域网。Linux、Claude Code 日志以及历史里程碑补报可用包内的 lan-report.md。两端快速路径当前采集 Codex 主会话。
 
 1. 新建一个随机命名的临时工作目录路径，实际目录由脚本创建。使用同一路径执行以下两个命令。首次可用 `-Label` 传入用户确认的姓名或账号名。已知本上报 chat UUID 时传 `-ExcludeSessionId`。Windows 设备哈希使用 MachineGuid、换行、用户 SID，macOS 使用 IOPlatformUUID、换行、用户 UID；从旧说明切换时先确认既有设备标识一致，以免重复统计。无法确认时先用手动流程续报。
 2. 执行准备命令。只有授权生成工作摘要时才加 `-IncludeEvidence`。如无批次，直接结束。没有实质进展时沿用现有摘要，直接提交。

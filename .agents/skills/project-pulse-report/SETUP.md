@@ -6,9 +6,10 @@
 
 ```json
 {
-  "server_url": "https://pulse.example.com",
+  "server_url": "http://192.168.16.70:4185",
   "device_token": "填写该电脑的设备令牌",
-  "sources": ["codex", "claude_code"]
+  "sources": ["codex", "claude_code"],
+  "allow_lan_http": true
 }
 ```
 

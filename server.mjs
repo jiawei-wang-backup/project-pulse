@@ -64,7 +64,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   const localView = process.env.PULSE_LOCAL_VIEW === '1';
   if (localView && bindHost !== '127.0.0.1') throw new Error('PULSE_LOCAL_VIEW requires PULSE_HOST=127.0.0.1');
   const reportOnly = process.env.PULSE_REPORT_ONLY === '1';
-  const server = createPreviewServer(createApi({localView,lanEnrollment:reportOnly && process.env.PULSE_LAN_ENROLLMENT === '1'}), {reportOnly});
+  const lanEnrollment = process.env.PULSE_LAN_ENROLLMENT === '1';
+  const server = createPreviewServer(createApi({localView,lanEnrollment}), {reportOnly});
   let port = requestedPort;
   server.on('error', error => {
     if (!reportOnly && error.code === 'EADDRINUSE' && port < Math.min(requestedPort + 10, 65535)) server.listen(++port, bindHost);
