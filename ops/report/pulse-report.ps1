@@ -5,7 +5,10 @@ param(
     [string]$Label,
     [string]$ExcludeSessionId,
     [string]$SummarizerTool = 'codex',
-    [switch]$IncludeEvidence
+    [switch]$IncludeEvidence,
+    [string]$StateDir = $PSScriptRoot,
+    [string]$GitHubLogin,
+    [switch]$ResolveGit
 )
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false, $true)
@@ -20,10 +23,16 @@ function StableId([string]$Value) {
 function WriteJson($Path, $Value) {
     [IO.File]::WriteAllText($Path, (ConvertTo-Json -InputObject $Value -Depth 20 -Compress), $utf8)
 }
+function UsageTotals($Rows) {
+    $result=@{events=@($Rows).Count;input_tokens=0L;cached_input_tokens=0L;output_tokens=0L}
+    foreach ($row in $Rows) { foreach ($key in @('input_tokens','cached_input_tokens','output_tokens')) { $result[$key]+=[long]$row.$key } }
+    return $result
+}
 function Request($Route, $BodyPath) {
     $argsForCurl = @('-q','-fsS','--noproxy','*','--connect-timeout','2','--max-time','4',
         '-H',"X-Pulse-LAN-Device: $deviceKey")
     if ($BodyPath) {
+        if ($GitHubLogin) { $argsForCurl+=@('-H',"X-Pulse-LAN-GitHub: $GitHubLogin") }
         if ($Label) { $argsForCurl += @('-H',('X-Pulse-LAN-Label: ' + [uri]::EscapeDataString($Label))) }
         $argsForCurl += @('-H','Content-Type: application/json','--data-binary',('@' + $BodyPath))
     }
@@ -47,10 +56,13 @@ $editsPath = Join-Path $WorkDir 'summaries.json'
 
 if ($Action -eq 'Submit') {
     $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (!$Label) { $Label=$plan.label }
+    if (!$GitHubLogin) { $GitHubLogin=$plan.github_login }
     $edits = @()
     if ([IO.File]::Exists($editsPath)) { $edits = @(Get-Content -LiteralPath $editsPath -Raw -Encoding UTF8 | ConvertFrom-Json) }
     $sent = 0
     $alreadyCommitted = 0
+    $receipts=@()
     foreach ($batch in $plan.batches) {
         $source = $batch.cursor.source_id
         $edit = @($edits | Where-Object { $_.source_id -eq $source })
@@ -86,22 +98,49 @@ if ($Action -eq 'Submit') {
         if ($receipt.status -ne 'committed' -or $receipt.batch_id -ne $batch.batch_id -or $receipt.to_offset -ne $batch.cursor.to_offset) {
             throw "Unexpected receipt for $($batch.batch_id)"
         }
+        if (!$receipt.usage) { throw 'Missing server usage receipt; update the server.' }
+        $expected=UsageTotals @($batch.usage)
+        foreach ($key in @('events','input_tokens','cached_input_tokens','output_tokens')) {
+            if ($null -eq $receipt.usage.$key -or [long]$receipt.usage.$key -ne $expected[$key]) { throw "Server usage mismatch: $key" }
+        }
+        $receipts+=@{batch_id=$batch.batch_id;usage=$receipt.usage}
         $sent++
     }
-    @{submitted_batches=$sent; server_cursor_already_advanced=$alreadyCommitted; bytes_read=$plan.bytes_read; backlog=$plan.backlog} | ConvertTo-Json -Compress
+    @{submitted_batches=$sent; server_cursor_already_advanced=$alreadyCommitted;receipts=$receipts;usage_verified=($alreadyCommitted -eq 0); bytes_read=$plan.bytes_read; backlog=$plan.backlog} | ConvertTo-Json -Depth 10 -Compress
     return
 }
 
 if (Test-Path -LiteralPath $WorkDir) { throw 'Prepare requires a new working directory.' }
 [void][IO.Directory]::CreateDirectory($WorkDir)
+$directory=Request '/api/v1/report-directory'
+if ($directory.protocol_version -lt 3) { throw 'Server upgrade required: protocol 3 usage receipts.' }
+if ($GitHubLogin) {
+    if ($GitHubLogin -notmatch '^[a-zA-Z0-9-]{1,39}$') { throw 'Invalid GitHub login.' }
+    $matchesForLogin=@($directory.members | Where-Object { $_.github_login -eq $GitHubLogin })
+    if (!$Label) { $Label=if ($matchesForLogin.Count -eq 1) {$matchesForLogin[0].display_name} else {$GitHubLogin} }
+}
+[void][IO.Directory]::CreateDirectory($StateDir)
+$statePath=Join-Path $StateDir ('.pulse-state-'+(Hash $Server.TrimEnd('/')).Substring(0,12)+'.json')
+$scanState=if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json } else {
+    [pscustomobject]@{report_from=[DateTime]::UtcNow.AddDays(-7).ToString('yyyy-MM-ddTHH:mm:ssZ');next_index=0;label=$null;github_login=$null;excluded=@();first_user_seen=@();pending_work=$null;recovery_unverified=$false}
+}
+if (!$Label) { $Label=$scanState.label }; $scanState.label=$Label
+if (!$GitHubLogin) { $GitHubLogin=$scanState.github_login }; $scanState.github_login=$GitHubLogin
+if ($scanState.pending_work -and (Test-Path -LiteralPath (Join-Path $scanState.pending_work 'plan.json'))) {
+    $recovery=& $PSCommandPath -Action Submit -WorkDir $scanState.pending_work -Server $Server
+    $recovered=($recovery -join "`n") | ConvertFrom-Json
+    $scanState.recovery_unverified=(!$recovered.usage_verified)
+    $scanState.pending_work=$null
+}
+$known=@{}; foreach ($s in $directory.sources) { $known[$s.source_id]=$true }
 $root = if ($env:CODEX_HOME) { Join-Path $env:CODEX_HOME 'sessions' } else { Join-Path $HOME '.codex/sessions' }
-$cutoff = [DateTime]::UtcNow.AddDays(-7)
+$cutoff = ([DateTimeOffset]$scanState.report_from).UtcDateTime
 $files = @(Get-ChildItem -Path (Join-Path $root '*/*/*/*.jsonl') -File -ErrorAction SilentlyContinue |
-    Where-Object { $_.LastWriteTimeUtc -ge $cutoff -and !($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
+    Where-Object { ($_.LastWriteTimeUtc -ge $cutoff -or ($_.Name -match '([a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12})' -and $known[$Matches[1]])) -and !($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } |
     Sort-Object LastWriteTimeUtc,FullName)
 # Rotate the bounded scan so unchanged files cannot permanently hide later files.
-if ($files.Count -gt 8) {
-    $start = [int]([Math]::Floor([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()/1800) % $files.Count)
+if ($files.Count) {
+    $start = [int]($scanState.next_index % $files.Count)
     if ($start -gt 0) { $files = @($files[$start..($files.Count-1)] + $files[0..($start-1)]) }
 }
 $batches = @()
@@ -110,6 +149,7 @@ $bytesRead = 0
 $backlog = $false
 $skips = @{}
 $checked = 0
+$cursorQueries=0; $unchanged=0; $excluded=0; $initialSnapshots=0; $counterResets=0; $unmeasured=0
 $scanClock = [Diagnostics.Stopwatch]::StartNew()
 $seenSources = @{}
 foreach ($file in $files) {
@@ -120,22 +160,32 @@ foreach ($file in $files) {
         # Recent Codex builds can emit a session_meta line larger than 16 KiB
         # because it includes the resolved instruction set. Keep this bounded,
         # while allowing the first JSONL record to be decoded reliably.
-        $head = New-Object byte[] ([Math]::Min(65536, [Math]::Min($stream.Length,1048576-$bytesRead)))
-        $n = $stream.Read($head,0,$head.Length)
-        $bytesRead += $n
+        $headStream=[IO.MemoryStream]::new()
+        try {
+            $found=$false
+            while (!$found -and $bytesRead -lt 1048576) {
+                $chunk=New-Object byte[] ([Math]::Min(4096,1048576-$bytesRead))
+                $read=$stream.Read($chunk,0,$chunk.Length)
+                if (!$read) { break }
+                $bytesRead+=$read; $headStream.Write($chunk,0,$read)
+                $found=([Array]::IndexOf($chunk,[byte]10,0,$read) -ge 0)
+            }
+            $head=$headStream.ToArray(); $n=$head.Length
+        } finally { $headStream.Dispose() }
         if ($n -eq 0) { continue }
         $lf = [Array]::IndexOf($head,[byte]10,0,$n)
-        if ($lf -lt 0) { $skips[$checked]='no_session_metadata'; continue }
+        if ($lf -lt 0) { $skips[$checked]='metadata_exceeds_budget_or_incomplete'; continue }
         $meta = $utf8.GetString($head,0,$lf) | ConvertFrom-Json
         $source = [string]$meta.payload.id
         if ($meta.type -ne 'session_meta' -or $source -notmatch '^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$' -or
             $meta.payload.source.subagent -or $meta.payload.parent_thread_id -or $source -eq $ExcludeSessionId -or
-            [Text.Encoding]::UTF8.GetString($head,0,$n).Contains('PROJECT_PULSE_AUTOMATION')) { continue }
+            $source -in $scanState.excluded) { $excluded++; continue }
         if ($seenSources.ContainsKey($source)) { $skips[$checked]='duplicate_source'; continue }
         $seenSources[$source] = $true
         $cursor = Request "/api/v1/report-cursor?source_id=$source"
+        $cursorQueries++
         $from = [long]$cursor.offset
-        if ($stream.Length -eq $from) { continue }
+        if ($stream.Length -eq $from) { $unchanged++; continue }
         if ($stream.Length -lt $from) { $skips[$checked]='file_truncated'; continue }
         $buffer = New-Object byte[] ([Math]::Min($stream.Length-$from,1048576-$bytesRead))
         [void]$stream.Seek($from,'Begin')
@@ -144,6 +194,8 @@ foreach ($file in $files) {
         $end = $from
         $model = $cursor.context.model
         $counts = $cursor.context
+        $sourceCutoff=if ($cursor.context.report_from) { ([DateTimeOffset]$cursor.context.report_from).UtcDateTime } elseif ($from -gt 0) { [DateTime]::MinValue } else {$cutoff}
+        $reportFrom=if ($sourceCutoff -eq [DateTime]::MinValue) {'1970-01-01T00:00:00Z'} else {$sourceCutoff.ToString('yyyy-MM-ddTHH:mm:ssZ')}
         $usage = @()
         $activity = $null
         $state = if ($cursor.agent_state) { $cursor.agent_state } else { 'unknown' }
@@ -159,9 +211,16 @@ foreach ($file in $files) {
             $lineStart = $i+1
             $end = $from+$lineStart
             $p = $row.payload
+            if ($source -notin $scanState.first_user_seen -and $row.type -eq 'event_msg' -and $p.type -eq 'user_message') {
+                $scanState.first_user_seen=@($scanState.first_user_seen)+@($source)
+                if ([string]$p.message -match '^PROJECT_PULSE_AUTOMATION(?:\b|\u3002)') {
+                    $scanState.excluded=@($scanState.excluded)+@($source)
+                    $end=$from; $usage=@(); $skips[$checked]='reporting_session'; break
+                }
+            }
             if ($row.type -eq 'turn_context' -and $p.model -match '^[\w./:-]{1,100}$') { $model = $p.model }
             if ($row.type -ne 'event_msg' -or !$row.timestamp) { continue }
-            $recent = ([DateTimeOffset]$row.timestamp).UtcDateTime -ge $cutoff
+            $recent = ([DateTimeOffset]$row.timestamp).UtcDateTime -ge $sourceCutoff
             switch ($p.type) {
                 'task_started' { if ($recent) { $activity=$row.timestamp; $state='running' } }
                 'turn_aborted' { if ($recent) { $activity=$row.timestamp; $state='idle' } }
@@ -177,12 +236,24 @@ foreach ($file in $files) {
                     if (!$total) { break }
                     $keys = @('input_tokens','cached_input_tokens','output_tokens')
                     $delta = @{}
+                    $initial=($null -eq $counts.input_tokens -and $null -eq $counts.output_tokens)
+                    $reset=$false
+                    foreach ($key in $keys) { if ($null -ne $counts.$key -and $null -ne $total.$key -and $total.$key -lt $counts.$key) { $reset=$true } }
+                    if ($initial) { $initialSnapshots++ }; if ($reset) { $counterResets++ }
                     foreach ($key in $keys) {
-                        $delta[$key] = if ($null -ne $total.$key -and $null -ne $counts.$key -and $total.$key -ge $counts.$key) {
+                        $last=$p.info.last_token_usage.$key
+                        $delta[$key] = if ($reset) {
+                            if ($null -ne $last -and $last -ge 0 -and $null -ne $total.$key -and $last -le $total.$key) { [long]$last } else { $null }
+                        } elseif ($initial -and $null -ne $total.$key) {
+                            $started=if ($meta.payload.timestamp) {$meta.payload.timestamp} else {$meta.timestamp}
+                            if ($started -and ([DateTimeOffset]$started).UtcDateTime -ge $sourceCutoff) { [long]$total.$key }
+                            elseif ($null -ne $last -and $last -ge 0 -and $last -le $total.$key) { [long]$last } else {$null}
+                        } elseif ($null -ne $total.$key -and $null -ne $counts.$key -and $total.$key -ge $counts.$key) {
                             [long]$total.$key - [long]$counts.$key
                         } else { $null }
                     }
                     $counts = $total
+                    if ($recent -and @($keys | Where-Object {$null -eq $delta[$_]}).Count) { $unmeasured++ }
                     if ($recent -and ($delta.input_tokens -gt 0 -or $delta.output_tokens -gt 0)) {
                         if ($delta.cached_input_tokens -gt $delta.input_tokens -and $null -ne $delta.input_tokens) { $delta.cached_input_tokens=$null }
                         $activity=$row.timestamp
@@ -199,16 +270,16 @@ foreach ($file in $files) {
         $agents = @()
         if ($activity) {
             $repo = $null
-            if ($meta.payload.git.repository_url -match '^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([\w.-]+/[\w.-]+?)(?:\.git)?/?$') {
+            if ($meta.payload.git.repository_url -match '^(?:https://github\.com/|git@github\.com:|ssh://git@(?:github\.com|ssh\.github\.com)(?::443)?/)([\w.-]+/[\w.-]+?)(?:\.git)?/?$') {
                 $remoteName = $Matches[1]
-                $repo = $cursor.repositories | Where-Object { $_ -eq $remoteName } | Select-Object -First 1
+                $repo = $remoteName.ToLowerInvariant()
             }
-            if (!$repo -and $meta.payload.cwd -and (Get-Command git -ErrorAction SilentlyContinue) -and
+            if ($ResolveGit -and !$repo -and $meta.payload.cwd -and (Get-Command git -ErrorAction SilentlyContinue) -and
                 (Test-Path -LiteralPath $meta.payload.cwd -PathType Container)) {
                 $remote = & git -C $meta.payload.cwd config --local --get remote.origin.url 2>$null
-                if ($remote -match '^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([\w.-]+/[\w.-]+?)(?:\.git)?/?$') {
+                if ($remote -match '^(?:https://github\.com/|git@github\.com:|ssh://git@(?:github\.com|ssh\.github\.com)(?::443)?/)([\w.-]+/[\w.-]+?)(?:\.git)?/?$') {
                     $remoteName = $Matches[1]
-                    $repo = $cursor.repositories | Where-Object { $_ -eq $remoteName } | Select-Object -First 1
+                    $repo = $remoteName.ToLowerInvariant()
                 }
             }
             $session = @{session_id=$source; tool='codex'; revision=$end; repository=$repo; started_at=$null;
@@ -224,10 +295,15 @@ foreach ($file in $files) {
             }
         }
         $batches += @{schema_version=1; batch_id=[guid]::NewGuid().ToString(); sent_at=[DateTime]::UtcNow.ToString('o');
-            collector_version='2.1.0'; sessions=$sessions; agents=$agents; summaries=@(); usage=$usage; projects=@();
+            collector_version='3.0.0'; sessions=$sessions; agents=$agents; summaries=@(); usage=$usage; projects=@();
             cursor=@{source_id=$source; from_offset=$from; to_offset=$end; context=@{model=$model;
-                input_tokens=$counts.input_tokens; cached_input_tokens=$counts.cached_input_tokens; output_tokens=$counts.output_tokens}}}
+                report_from=$reportFrom;input_tokens=$counts.input_tokens; cached_input_tokens=$counts.cached_input_tokens; output_tokens=$counts.output_tokens}}}
     } finally { $stream.Dispose() }
 }
-WriteJson $planPath @{batches=$batches; bytes_read=$bytesRead; backlog=$backlog}
-@{prepared_batches=$batches.Count; bytes_read=$bytesRead; backlog=$backlog; skipped=$skips; evidence=$evidence} | ConvertTo-Json -Depth 20 -Compress
+$scanState.next_index+=$checked
+if ($batches.Count) { $scanState.pending_work=$WorkDir }
+WriteJson $planPath @{batches=$batches; bytes_read=$bytesRead; backlog=$backlog;label=$Label;github_login=$GitHubLogin}
+WriteJson ($statePath+'.tmp') $scanState
+Move-Item -Force -LiteralPath ($statePath+'.tmp') -Destination $statePath
+@{collector_version='3.0.0';server=$Server;prepared_batches=$batches.Count;usage=(UsageTotals @($batches | ForEach-Object {$_.usage})); bytes_read=$bytesRead; backlog=$backlog;
+    diagnostics=@{checked_files=$checked;cursor_queries=$cursorQueries;unchanged_files=$unchanged;excluded_files=$excluded;recovery_unverified=$scanState.recovery_unverified;initial_snapshots=$initialSnapshots;counter_resets=$counterResets;unmeasured_snapshots=$unmeasured;skipped=$skips}; evidence=$evidence} | ConvertTo-Json -Depth 20 -Compress

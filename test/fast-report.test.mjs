@@ -1,0 +1,122 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import {networkInterfaces,tmpdir} from 'node:os';
+import {mkdtemp,mkdir,writeFile,readFile,rm,utimes} from 'node:fs/promises';
+import {join,resolve} from 'node:path';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {randomUUID} from 'node:crypto';
+import {once} from 'node:events';
+
+const run=promisify(execFile);
+const host=Object.values(networkInterfaces()).flat().find(x=>x.family==='IPv4' && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(x.address))?.address;
+if (process.env.CI && !host && ['darwin','win32'].includes(process.platform)) throw new Error('No private test interface; portable collector verification cannot be skipped in CI.');
+test('portable collector: long metadata, baseline/reset, retry, stale backlog, exclusion, usage receipts',
+  {skip:!host || !['darwin','win32'].includes(process.platform)}, async()=>{
+  const root=await mkdtemp(join(tmpdir(),'pulse-fast-test-'));
+  const logs=join(root,'codex','sessions','2026','01','01');
+  const state=join(root,'state');
+  await mkdir(logs,{recursive:true});
+  const cursors=new Map(); let committed=0; let rejectNext=false; let corruptReceipt=false;
+  const totals={input_tokens:0,cached_input_tokens:0,output_tokens:0};
+  const server=http.createServer(async(req,res)=>{
+    const url=new URL(req.url,'http://local');
+    let result;
+    if(url.pathname==='/api/v1/report-directory') result={protocol_version:3,members:[],repositories:[],sources:[...cursors].map(([source_id,c])=>({source_id,offset:c.offset}))};
+    else if(url.pathname==='/api/v1/report-cursor') result=cursors.get(url.searchParams.get('source_id')) ?? {offset:0,context:{},repositories:[]};
+    else if(req.method==='POST') {
+      const chunks=[]; for await(const chunk of req) chunks.push(chunk);
+      const body=JSON.parse(Buffer.concat(chunks));
+      if(rejectNext) {rejectNext=false;res.writeHead(503).end();return;}
+      const previous=cursors.get(body.cursor.source_id);
+      if(previous?.offset !== body.cursor.to_offset) {
+        assert.equal(body.cursor.from_offset,previous?.offset ?? 0);
+        cursors.set(body.cursor.source_id,{offset:body.cursor.to_offset,context:body.cursor.context,repositories:[]});
+        for(const row of body.usage) for(const key of Object.keys(totals)) totals[key]+=row[key] ?? 0;
+        committed++;
+      }
+      const usage={events:body.usage.length};
+      for(const key of Object.keys(totals)) usage[key]=String(body.usage.reduce((n,r)=>n+(r[key]??0),0));
+      if(corruptReceipt) usage.input_tokens='999999';
+      result={status:'committed',batch_id:body.batch_id,to_offset:body.cursor.to_offset,usage};
+    } else {res.writeHead(404).end();return;}
+    res.setHeader('Content-Type','application/json');res.end(JSON.stringify(result));
+  }).listen(0,host);
+  await once(server,'listening');
+  const origin=`http://${host}:${server.address().port}`;
+  const windows=process.platform==='win32';
+  const invoke=async(action,work)=>{
+    const script=resolve('ops/report',windows?'pulse-report.ps1':'pulse-report.pl');
+    const args=windows?['-NoProfile','-ExecutionPolicy','Bypass','-File',script,'-Action',action,'-WorkDir',work,'-StateDir',state,'-Server',origin]
+      :[script,'--action',action,'--work-dir',work,'--state-dir',state,'--server',origin];
+    const output=await run(windows?'powershell.exe':'/usr/bin/perl',args,{env:{...process.env,CODEX_HOME:join(root,'codex')},maxBuffer:1024*1024});
+    return JSON.parse(output.stdout);
+  };
+  const at=new Date().toISOString();
+  const source=randomUUID();
+  const file=join(logs,`${source}.jsonl`);
+  const meta={type:'session_meta',timestamp:at,payload:{id:source,timestamp:at,cwd:root,base_instructions:'PROJECT_PULSE_AUTOMATION '+ 'x'.repeat(90000)}};
+  const token=(input,cached,output,last)=>({type:'event_msg',timestamp:at,payload:{type:'token_count',info:{total_token_usage:{input_tokens:input,cached_input_tokens:cached,output_tokens:output},...(last?{last_token_usage:last}:{})}}});
+  const lines=[meta,{type:'event_msg',timestamp:at,payload:{type:'user_message',message:'Implement the requested feature'}},
+    {type:'turn_context',payload:{model:'fixture-model'}},token(100,40,10),token(100,40,10),token(120,50,12),
+    token(5,2,1,{input_tokens:5,cached_input_tokens:2,output_tokens:1}),token(5,2,1)];
+  try {
+    await writeFile(file,lines.map(JSON.stringify).join('\n')+'\n');
+    const work=join(root,'work1');
+    const prepared=await invoke('Prepare',work);
+    assert.equal(prepared.prepared_batches,1);
+    assert.equal(prepared.usage.input_tokens,125);
+    assert.equal(prepared.usage.cached_input_tokens,52);
+    assert.equal(prepared.usage.output_tokens,13);
+    assert.equal(prepared.diagnostics.counter_resets,1);
+    rejectNext=true;
+    await assert.rejects(invoke('Submit',work));
+    // Prepare automatically retries the saved immutable request before scanning.
+    await invoke('Prepare',join(root,'retry'));
+    assert.deepEqual(totals,{input_tokens:125,cached_input_tokens:52,output_tokens:13});
+    assert.equal(committed,1);
+    await invoke('Submit',work);
+    assert.equal(committed,1);
+    // The cursor's saved cutoff must survive old mtimes and a missing local state.
+    await writeFile(file,lines.concat(token(8,3,2)).map(JSON.stringify).join('\n')+'\n');
+    const old=new Date(Date.now()-20*86400000);await utimes(file,old,old);
+    await rm(state,{recursive:true,force:true});
+    const next=join(root,'work2');const nextPlan=await invoke('Prepare',next);
+    assert.equal(nextPlan.usage.input_tokens,3);
+    corruptReceipt=true;await assert.rejects(invoke('Submit',next));
+    corruptReceipt=false;assert.equal((await invoke('Submit',next)).usage_verified,true);
+    // An explicit automation user request is excluded, not the metadata text.
+    const reportSource=randomUUID();
+    await writeFile(join(logs,`${reportSource}.jsonl`),[
+      {...meta,payload:{...meta.payload,id:reportSource}},
+      {type:'event_msg',timestamp:at,payload:{type:'user_message',message:'PROJECT_PULSE_AUTOMATION。Run report'}},token(999,0,0)
+    ].map(JSON.stringify).join('\n')+'\n');
+    const excluded=await invoke('Prepare',join(root,'work3'));
+    assert.equal(excluded.usage.events,0);
+    assert.ok(Object.values(excluded.diagnostics.skipped).includes('reporting_session'));
+    const plan=JSON.parse(await readFile(join(next,'plan.json')));
+    assert.ok(plan.batches[0].cursor.context.report_from);
+    // Never advance over a partial trailing JSONL record.
+    const partial=JSON.stringify(token(11,4,3));
+    await writeFile(file,lines.concat(token(8,3,2)).map(JSON.stringify).join('\n')+'\n'+partial.slice(0,20));
+    const half=await invoke('Prepare',join(root,'half'));
+    assert.equal(half.usage.events,0);
+    await writeFile(file,lines.concat(token(8,3,2)).map(JSON.stringify).join('\n')+'\n'+partial+'\n');
+    const fullWork=join(root,'full');
+    assert.equal((await invoke('Prepare',fullWork)).usage.input_tokens,3);
+    await invoke('Submit',fullWork);
+    // A cross-window initial snapshot must not import its historic cumulative total.
+    const oldSource=randomUUID();
+    await writeFile(join(logs,`${oldSource}.jsonl`),[
+      {...meta,timestamp:old.toISOString(),payload:{...meta.payload,id:oldSource,timestamp:old.toISOString()}},
+      token(1000000,500000,1000,{input_tokens:2,cached_input_tokens:1,output_tokens:1})
+    ].map(JSON.stringify).join('\n')+'\n');
+    const oldWork=join(root,'old');
+    assert.equal((await invoke('Prepare',oldWork)).usage.input_tokens,2);
+    await invoke('Submit',oldWork);
+  } finally {
+    await new Promise(resolve=>server.close(resolve));
+    await rm(root,{recursive:true,force:true});
+  }
+});

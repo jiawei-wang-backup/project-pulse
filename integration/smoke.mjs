@@ -16,7 +16,7 @@ const run=promisify(execFile);
 const temp=await mkdtemp(join(tmpdir(),'pulse-smoke-'));
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const token=randomUUID(), developer=randomUUID(), device=randomUUID();
-const server=createPreviewServer(createApi()).listen(0,'127.0.0.1');
+const server=createPreviewServer(createApi({lanEnrollment:true})).listen(0,'127.0.0.1');
 await once(server,'listening');
 const base='http://127.0.0.1:'+server.address().port;
 const at=new Date().toISOString();
@@ -113,7 +113,8 @@ try {
     started_at:at,last_activity_at:at,project_observation:{state:'on_track',reason_code:'progress_observed',observed_at:at}}],
     summaries:[{summary_id:randomUUID(),session_id:sourceId,observed_at:at,summary:'验证了直报事件的事务写入',
       summarizer_tool:'codex',prompt_version:'2.0.0'}]};
-  const receipt={batch_id:valid.batch_id,status:'committed',to_offset:250};
+  const receipt={batch_id:valid.batch_id,status:'committed',to_offset:250,
+    usage:{events:1,input_tokens:'10',cached_input_tokens:'2',output_tokens:'3'}};
   assert.deepEqual(await sendDirect(valid),receipt);
   assert.deepEqual(await sendDirect(valid),receipt);
   const {project_report: previousProject,latest_summary,agent_state,...position} = await readCursor();
@@ -166,6 +167,29 @@ try {
     FROM github_identities g JOIN devices d USING (developer_id)
     GROUP BY g.github_login ORDER BY g.github_login`);
   assert.deepEqual(enrollment.rows,[{github_login:'other-user',devices:2},{github_login:'renamed-user',devices:3}]);
+  // LAN clients share a registered member only after an explicit account claim,
+  // never merely because they use the same repository or display label.
+  const lanKey=createHash('sha256').update(randomUUID()).digest('hex');
+  const lanHeaders={'X-Pulse-LAN-Device':lanKey,'X-Pulse-LAN-GitHub':'renamed-user','Content-Type':'application/json'};
+  const directory=await (await fetch(base+'/api/v1/report-directory',{headers:lanHeaders})).json();
+  assert.equal(directory.protocol_version,3);
+  assert.ok(directory.capabilities.includes('usage_receipt'));
+  const lanSource=randomUUID();
+  const lanReport={...valid,batch_id:randomUUID(),cursor:{source_id:lanSource,from_offset:0,to_offset:1,
+    context:{...context,report_from:'2026-01-01T00:00:00Z'}},summaries:[],usage:[],
+    sessions:[{...valid.sessions[0],session_id:lanSource,revision:1,repository:'unregistered/app'}]};
+  const lanReceipt=await (await fetch(base+'/api/v1/reports',{method:'POST',headers:lanHeaders,body:JSON.stringify(lanReport)})).json();
+  assert.equal(lanReceipt.status,'committed');
+  const developerCount=(await pool.query('SELECT count(*) FROM developers')).rows[0].count;
+  await fetch(base+'/api/v1/reports',{method:'POST',headers:lanHeaders,body:JSON.stringify(lanReport)});
+  assert.equal((await pool.query('SELECT count(*) FROM developers')).rows[0].count,developerCount);
+  assert.deepEqual(lanReceipt.usage,{events:0,input_tokens:'0',cached_input_tokens:'0',output_tokens:'0'});
+  const lanDevice=await pool.query('SELECT developer_id FROM devices WHERE credential_digest=$1',[createHash('sha256').update('lan:'+lanKey).digest()]);
+  assert.equal(lanDevice.rows[0].developer_id,developer);
+  const workspace=await pool.query('SELECT workspace_name FROM sessions WHERE session_id=$1',[lanSource]);
+  assert.equal(workspace.rows[0].workspace_name,'unregistered/app');
+  const updatedDirectory=await (await fetch(base+'/api/v1/report-directory',{headers:lanHeaders})).json();
+  assert.equal(updatedDirectory.sources[0].source_id,lanSource);
   console.log('PostgreSQL smoke test passed');
 } finally {
   await new Promise(resolve=>server.close(resolve));

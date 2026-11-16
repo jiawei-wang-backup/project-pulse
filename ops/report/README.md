@@ -1,5 +1,7 @@
 # Project Pulse macOS / Windows 快速上报包
 
+版本以 `VERSION` 为准（当前 3.0.0），需要服务端协议 3。先阅读 `UPGRADE.md`，升级时保留本目录的隐藏状态文件和待续传目录。包内 `SHA256SUMS` 可用于核对文件完整性。
+
 这是客户端上报包。解压后不要移动包内文件，在 Codex 打开解压后的 `project-pulse-report` 目录，把 `PROMPT.txt` 全文发给 Codex。不要直接在 ZIP 预览里执行。
 
 ## 不可更改的部署信息
@@ -11,17 +13,17 @@
 
 ## 试报流程
 
-1. 新建一个随机命名的临时工作目录路径，实际目录由脚本创建。使用同一路径执行以下两个命令。首次可用 `-Label` 传入用户确认的姓名或账号名。已知本上报 chat UUID 时传 `-ExcludeSessionId`。Windows 设备哈希使用 MachineGuid、换行、用户 SID，macOS 使用 IOPlatformUUID、换行、用户 UID；从旧说明切换时先确认既有设备标识一致，以免重复统计。无法确认时先用手动流程续报。
+1. 在本包永久目录下的 `.pulse-pending/` 中选一个尚不存在的随机子目录路径，脚本会创建它。Prepare 与 Submit 使用同一路径，失败后保留该目录；下轮 Prepare 会先重试上轮请求。不要把待发请求放在会被系统清理的临时目录。首次先查询团队目录；仅用用户确认的 GitHub 账号传入 `-GitHubLogin`（macOS 为 `--github-login`），唯一命中服务端已登记账号时归到该成员；无法匹配时用 `-Label`／`--label` 设置用户确认的名字。无人值守时沿用本地已保存的身份。此局域网模式的账号声明不等同于 GitHub 登录认证，不能按共享仓库或提交作者推断是谁。已知本上报 chat UUID 时必须传 `-ExcludeSessionId`／`--exclude-session-id`。Windows 设备哈希使用 MachineGuid、换行、用户 SID，macOS 使用 IOPlatformUUID、换行、用户 UID；切换前核对既有设备标识，避免重复。
 2. 执行准备命令。只有授权生成工作摘要时才加 `-IncludeEvidence`。必须上传新增 Token 消耗，包括模型、事件时间、所属会话、输入 `input_tokens`、缓存输入 `cached_input_tokens`、输出 `output_tokens`。这些由固定脚本从授权日志解析并按服务端游标生成差分；缓存输入是输入的子集，不可重复加到总 Token。检查 `plan.json` 的 `batches[].usage` 条数和三个字段的合计。没有新摘要或里程碑时仍提交用量；无批次时继续核验并设置已授权的定时任务。
 
 ```powershell
-powershell.exe -NoProfile -File .\pulse-report.ps1 -Action Prepare -WorkDir <临时路径> -IncludeEvidence
+powershell.exe -NoProfile -File .\pulse-report.ps1 -Action Prepare -WorkDir <尚不存在的待续传子目录> -IncludeEvidence -ResolveGit
 ```
 
 macOS 对应命令：
 
 ```sh
-/usr/bin/perl ./pulse-report.pl --action Prepare --work-dir "<临时路径>" --include-evidence
+/usr/bin/perl ./pulse-report.pl --action Prepare --work-dir "<尚不存在的待续传子目录>" --include-evidence --resolve-git
 ```
 
 3. 根据 Prepare 返回的 `evidence`，仅为有新成果、验证结果或阻塞的会话写 `summary`。项目报告缺失或有新进展时写 `goal` 和 `milestones`。结合已有项目报告，证据不足时写具体待验证项。内容仅限有依据的短句，禁止复制原日志、代码、完整路径、凭证或链接。同项目每轮至多提交一份。在临时目录以 UTF-8 保存数组 `summaries.json`，例如：
@@ -30,7 +32,7 @@ macOS 对应命令：
 [{"source_id":"替换成 Prepare 返回的 UUID","summary":"完成了消息回执测试","goal":"稳定展示消息回执","milestones":[{"title":"核对回执状态","state":"completed","evidence":"已通过回执测试"},{"title":"覆盖弱网恢复","state":"pending","evidence":"缺少断网重连测试"}]}]
 ```
 
-4. 提交并核对回执。输出实际提交批数、读取字节、跳过原因、是否有积压，以及输入／缓存输入／输出 Token 增量。脚本只在服务端返回 `committed` 且批次、游标一致时认定提交成功。再请求 `GET http://192.168.16.70:4185/api/v1/dashboard?days=7`，检查 `session_usage` 中对应会话的 Token（以实际响应结构为准）。回执确认入库，用量核验确认计量数据，二者分别回报。缺少用量时说明是无新增、源日志不提供、解析失败还是积压尚未读到，不可凭空补数或声称完整上传成功。提交成功后清理本轮临时目录；失败或回执不明时，先用同一目录重跑 Submit，避免重新生成请求。只有在确认下一轮能从服务端游标继续时才清理失败的临时目录。
+4. 提交并核对回执。输出实际提交批数、读取字节、诊断、积压和三类 Token 增量。脚本要求 `committed`、批次、游标及回执 `usage` 的事件数和三类 Token 全部一致才设置 `usage_verified: true`；重试同一正文不会重复计量。若只有游标已推进但未拿到用量回执，不能报告精确用量已核验，应继续用原目录 Submit 获取原请求的回执。Dashboard 的7天窗口可能看不到较旧积压，用量以事务提交回执为准；Dashboard 可作辅助展示核验。无批次时检查 `diagnostics`：至少有成功的游标查询且没有未解决的解析错误，才能报告“已检查的来源无新增”；还有积压时不能声称全量同步完毕。缺少日志、无授权来源或全部被排除时如实报告，不能当作完整试报通过。只有用量核验成功后才清理本轮待续传子目录，保留包目录中的隐藏状态文件。
 
 ```powershell
 powershell.exe -NoProfile -File .\pulse-report.ps1 -Action Submit -WorkDir <临时路径>
@@ -42,7 +44,11 @@ macOS 对应命令：
 /usr/bin/perl ./pulse-report.pl --action Submit --work-dir "<临时路径>"
 ```
 
-脚本单轮检查最多 8 个候选文件，文件头和增量合计最多 1 MiB，并在约 12 秒的扫描预算到达后暂停。单个 HTTP 请求最多等待 4 秒。候选按近 7 天修改时间选取，用量按事件时间筛选。旧事件只用来建立基线。只处理完整 JSONL 行，预算内装不下一行时会留下跳过原因。`backlog: true` 只表示后续轮次仍有候选数据，不代表本轮提交失败。如果长行持续阻塞，按包内 `lan-report.md` 手动协议处理。
+脚本单轮检查最多8个候选文件、最多读取1 MiB，并在约12秒扫描预算到达后暂停；请求最多等待4秒。首次采集起点为首次运行前7天，并持久化在本包状态及服务端游标上下文，之后不随日期滚动；已知来源即使修改时间过旧也继续追赶积压。轮转位置持久化，多次运行会继续轮转。无变化文件也计入检查预算，所以 `backlog` 是待检查／待读取提示，不是精确剩余字节数。
+
+首次快照：会话开始于采集范围内时可计入该主会话累计量；跨窗口老会话的首次快照只用可信的 `last_token_usage`，不将窗口前累计量计入。正常快照取累计差分，重复快照计零；累计值回退时只用明确的 `last_token_usage`，缺失则记录 `unmeasured_snapshots`。该诊断表示存在无法确定的用量，不能声称计量完整。文件头分段读取到完整首行，受整轮1 MiB限制；不完整行不推进游标。超过预算的长行、截断或损坏文件报告诊断，不能静默跳过。
+
+`-ResolveGit`／`--resolve-git` 只读授权会话工作目录的本地 Git remote，不遍历项目文件。以规范化的 GitHub `owner/repo` 关联项目；未登记仓库也保留规范项目键，之后管理员登记时可归入同一项目。无法确认远端时保留本地工作区，不按相似名字合并。
 
 ## 创建并核对定时任务
 

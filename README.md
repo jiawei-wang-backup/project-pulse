@@ -17,6 +17,8 @@
 
 macOS 和 Windows 可使用 [固定脚本和快速试报说明](ops/report/README.md) 处理 Codex 增量。可信局域网试点也可分发 [单文件上报说明书](docs/lan-report.md)。管理员运行 `./ops/local.sh serve-lan <本机私有 IPv4>`，分发前将说明书里的服务地址改为实际局域网地址。此入口免设备令牌，HTTP 明文传输，供同一可信局域网内试跑。
 
+当前便携上报包为3.0.0，局域网快速流程无需客户端 config.json 或设备令牌（下文配置仅用于独立令牌模式）。服务端须先更新代码并重启，以提供协议3的目录及精确计量回执。用 `sh ops/report/build-package.sh <绝对路径.zip>` 构建包含 VERSION、校验和、升级说明、macOS/Windows脚本的自包含包。客户端覆盖更新原永久目录时保留隐藏状态和待续传目录。具体见 [升级及验收说明](ops/report/UPGRADE.md)。GitHub PR定时同步由服务端独立负责。
+
 复制整个 [Project Pulse 上报包](.agents/skills/project-pulse-report) 到另一台电脑，按 [试报说明](.agents/skills/project-pulse-report/SETUP.md) 配置。Codex 和 Claude Code 可以作为日志来源，也可以作为执行上报的工具。其他工具需有本机访问能力和已验证的日志格式映射。
 
 macOS 和 Windows 客户端都使用已有的 Codex 和系统命令。由看板管理员发放设备令牌。用文本编辑器在当前用户目录下创建 `.project-pulse/config.json`，文件名以 `.json` 结尾。

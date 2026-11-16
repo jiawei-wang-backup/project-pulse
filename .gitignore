@@ -4,3 +4,6 @@ node_modules/
 !.env.example
 .pulse/
 .DS_Store
+.pulse-state-*.json
+.pulse-state-*.json.tmp
+.pulse-pending/

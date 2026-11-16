@@ -33,8 +33,9 @@ function validate(report) {
       arrays.some(key => key !== 'projects' && report[key].length) ||
       report.projects.some(row => row?.source_session_id !== cursor.source_id)
     )) fail(422,'invalid_project_backfill');
-    keys(cursor.context,'model input_tokens cached_input_tokens output_tokens');
-    const {model,...counts} = cursor.context;
+    keys(cursor.context,'model input_tokens cached_input_tokens output_tokens' + (Object.hasOwn(cursor.context,'report_from') ? ' report_from' : ''));
+    const {model,report_from,...counts} = cursor.context;
+    if (report_from !== undefined && (typeof report_from !== 'string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(report_from) || !Number.isFinite(Date.parse(report_from)))) fail(422,'invalid_report_from');
     if ((model !== null && (typeof model !== 'string' || !/^[\w./:-]{1,100}$/.test(model))) ||
         Object.values(counts).some(value => value !== null && (!Number.isSafeInteger(value) || value < 0))) {
       fail(422,'invalid_cursor_context');
@@ -121,7 +122,7 @@ async function upsert(client, table, key, record, revisioned = false, fixed = []
   fail(409, 'record_conflict');
 }
 
-function lanIdentity(deviceKey, labelHeader) {
+function lanIdentity(deviceKey, labelHeader, githubHeader) {
   if (typeof deviceKey !== 'string' || !/^[a-f0-9]{64}$/.test(deviceKey)) fail(401,'invalid_lan_device');
   const hex = digest('project-pulse-lan:' + deviceKey).toString('hex');
   const id = [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20,32)].join('-');
@@ -132,7 +133,9 @@ function lanIdentity(deviceKey, labelHeader) {
     if (!/^[\p{L}\p{M}\p{N} _.@()-]{1,80}$/u.test(label)) fail(422,'invalid_lan_label');
   }
   const placeholder = '局域网设备 ' + hex.slice(0,12);
-  return {id, credential: 'lan:' + deviceKey, placeholder, name: label ? label + ' · ' + hex.slice(0,12) : placeholder};
+  if (githubHeader !== undefined && (typeof githubHeader !== 'string' || !/^[a-z0-9-]{1,39}$/i.test(githubHeader))) fail(422,'invalid_github_login');
+  return {id, credential: 'lan:' + deviceKey, placeholder, githubLogin:githubHeader,
+    name: label ? label + ' · ' + hex.slice(0,12) : placeholder};
 }
 
 export async function ingest(pool, token, raw, lan = null) {
@@ -145,13 +148,30 @@ export async function ingest(pool, token, raw, lan = null) {
     await client.query('BEGIN');
     if (lan) {
       if (!report.cursor) fail(422,'cursor_required');
-      await client.query('INSERT INTO developers(developer_id,display_name) VALUES ($1,$2) ON CONFLICT DO NOTHING',[lan.id,lan.name]);
-      await client.query('INSERT INTO devices(device_id,developer_id,credential_digest) VALUES ($1,$1,$2) ON CONFLICT DO NOTHING',
-        [lan.id,digest(lan.credential)]);
+      const existing=await client.query('SELECT 1 FROM devices WHERE credential_digest=$1',[digest(lan.credential)]);
+      if (!existing.rowCount) {
+        await client.query('INSERT INTO developers(developer_id,display_name) VALUES ($1,$2) ON CONFLICT DO NOTHING',[lan.id,lan.name]);
+        await client.query('INSERT INTO devices(device_id,developer_id,credential_digest) VALUES ($1,$1,$2) ON CONFLICT DO NOTHING',
+          [lan.id,digest(lan.credential)]);
+      }
     }
     const auth = await client.query('SELECT device_id,developer_id FROM devices WHERE credential_digest=$1 AND revoked_at IS NULL FOR UPDATE', [digest(lan?.credential ?? token)]);
     if (!auth.rowCount) fail(401, 'invalid_device');
     const device_id = auth.rows[0].device_id;
+    // LAN mode is explicitly trusted and self-declared. Only bind a supplied
+    // account to an existing, server-registered GitHub identity; shared repos
+    // or labels must never be used as identity evidence.
+    if (lan?.githubLogin && auth.rows[0].developer_id === lan.id) {
+      const member=await client.query('SELECT developer_id FROM github_identities WHERE lower(github_login)=lower($1)',[lan.githubLogin]);
+      if (member.rowCount===1) {
+        await client.query('UPDATE devices SET developer_id=$2 WHERE device_id=$1',[device_id,member.rows[0].developer_id]);
+        auth.rows[0].developer_id=member.rows[0].developer_id;
+        await client.query(`DELETE FROM developers WHERE developer_id=$1
+          AND NOT EXISTS (SELECT 1 FROM devices WHERE developer_id=$1)
+          AND NOT EXISTS (SELECT 1 FROM provider_accounts WHERE developer_id=$1)
+          AND NOT EXISTS (SELECT 1 FROM github_identities WHERE developer_id=$1)`,[lan.id]);
+      }
+    }
     if (lan && lan.name !== lan.placeholder && auth.rows[0].developer_id === lan.id) {
       await client.query('UPDATE developers SET display_name=$2 WHERE developer_id=$1 AND display_name=$3',
         [lan.id,lan.name,lan.placeholder]);
@@ -173,6 +193,8 @@ export async function ingest(pool, token, raw, lan = null) {
       await client.query('INSERT INTO ingest_batches (device_id,batch_id,request_digest,schema_version,collector_version,sent_at) VALUES ($1,$2,$3,$4,$5,$6)', [device_id,batch_id,hash,schema_version,collector_version,sent_at]);
       for (const {tool,repository,project_observation,...session} of report.sessions) {
         const repo = repository ? await client.query("SELECT repository_id FROM repositories WHERE lower(github_host)='github.com' AND lower(full_name)=lower($1)",[repository]) : null;
+        if (repository && !repo?.rowCount && /^[\w.-]+\/[\w.-]+$/.test(repository)) session.workspace_name=repository.toLowerCase();
+        if (repo?.rowCount) await client.query('UPDATE sessions SET repository_id=$2 WHERE workspace_name=$1 AND repository_id IS NULL',[repository.toLowerCase(),repo.rows[0].repository_id]);
         await upsert(client,'sessions',['device_id','session_id'],{
           device_id,...session,tool_id:tool,repository_id:repo?.rows[0]?.repository_id ?? null,
           ...(cursor && project_observation === null ? {} : {
@@ -206,7 +228,11 @@ export async function ingest(pool, token, raw, lan = null) {
     }
     await client.query('UPDATE devices SET last_seen_at=now() WHERE device_id=$1',[device_id]);
     await client.query('COMMIT');
-    return { batch_id, status:'committed', ...(cursor ? {to_offset:cursor.to_offset} : {}) };
+    const usage = {events:report.usage.length};
+    for (const key of ['input_tokens','cached_input_tokens','output_tokens']) {
+      usage[key] = report.usage.reduce((sum,row)=>sum+BigInt(row[key] ?? 0),0n).toString();
+    }
+    return { batch_id, status:'committed', ...(cursor ? {to_offset:cursor.to_offset} : {}), usage };
   } catch (error) {
     await client.query('ROLLBACK');
     if (['23503','23514','22P02','22001','22008'].includes(error.code)) fail(422,'invalid_record');
@@ -271,6 +297,7 @@ export async function dashboard(pool, days) {
       WHERE u.accounting='billable' AND u.occurred_at >= $1
       GROUP BY coalesce(r.full_name,s.workspace_name) ORDER BY sum(coalesce(u.input_tokens,0)+coalesce(u.output_tokens,0)) DESC`,[cutoff]],
     [`SELECT u.session_id,sum(coalesce(u.input_tokens,0)) AS input_tokens,
+      sum(coalesce(u.cached_input_tokens,0)) AS cached_input_tokens,
       sum(coalesce(u.output_tokens,0)) AS output_tokens
       FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1
       GROUP BY u.session_id`,[cutoff]],
@@ -324,7 +351,7 @@ async function reportCursor(pool, token, sourceId, lan = null) {
 }
 
 async function reportDirectory(pool, lan) {
-  const [members, repositories, current] = await Promise.all([
+  const [members, repositories, current, sources] = await Promise.all([
     pool.query(`SELECT d.display_name,g.github_login,
       ARRAY(SELECT DISTINCT r.full_name FROM devices v JOIN sessions s USING (device_id)
         JOIN repositories r USING (repository_id)
@@ -336,10 +363,15 @@ async function reportDirectory(pool, lan) {
     pool.query(`SELECT full_name,'https://github.com/' || full_name AS url
       FROM repositories WHERE lower(github_host)='github.com' ORDER BY full_name`),
     pool.query(`SELECT v.revoked_at,d.display_name FROM devices v JOIN developers d USING (developer_id)
-      WHERE v.credential_digest=$1`,[digest(lan.credential)])
+      WHERE v.credential_digest=$1`,[digest(lan.credential)]),
+    pool.query(`SELECT c.source_id,c.byte_offset AS offset FROM report_cursors c
+      JOIN devices v USING (device_id) WHERE v.credential_digest=$1 AND v.revoked_at IS NULL
+      ORDER BY c.source_id`,[digest(lan.credential)])
   ]);
   if (current.rows[0]?.revoked_at) fail(401,'invalid_device');
-  return {members:members.rows,repositories:repositories.rows,
+  return {protocol_version:3, recommended_collector_version:'3.0.0',
+    capabilities:['usage_receipt','persistent_report_from'],sources:sources.rows,
+    members:members.rows,repositories:repositories.rows,
     current_display_name:current.rows[0]?.display_name ?? null};
 }
 
@@ -354,7 +386,7 @@ export function createApi({localView = false, lanEnrollment = false} = {}) {
       let data;
       try {
         const deviceKey = req.headers['x-pulse-lan-device'];
-        const lan = lanEnrollment && !req.headers.authorization && deviceKey !== undefined ? lanIdentity(deviceKey,req.headers['x-pulse-lan-label']) : null;
+        const lan = lanEnrollment && !req.headers.authorization && deviceKey !== undefined ? lanIdentity(deviceKey,req.headers['x-pulse-lan-label'],req.headers['x-pulse-lan-github']) : null;
         if (req.method==='POST' && url.pathname==='/api/v1/reports') {
           if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) fail(415,'invalid_content_type');
           const chunks = [];

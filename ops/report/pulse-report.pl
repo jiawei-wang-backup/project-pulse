@@ -7,11 +7,15 @@ use Getopt::Long;
 use POSIX qw(strftime);
 use Time::HiRes qw(time);
 use Encode qw(encode_utf8);
+use FindBin;
+use File::Path qw(make_path);
 
+my ($state_dir,$github_login,$resolve_git) = ($FindBin::Bin,undef,0);
 my ($action,$work,$server,$label,$exclude,$include,$tool) =
   ('Prepare',undef,'http://192.168.16.70:4185',undef,undef,0,'codex');
 GetOptions('action=s'=>\$action,'work-dir=s'=>\$work,'server=s'=>\$server,'label=s'=>\$label,
-    'exclude-session-id=s'=>\$exclude,'include-evidence'=>\$include,'summarizer-tool=s'=>\$tool) or die "Invalid options\n";
+    'exclude-session-id=s'=>\$exclude,'include-evidence'=>\$include,'summarizer-tool=s'=>\$tool,
+    'state-dir=s'=>\$state_dir,'github-login=s'=>\$github_login,'resolve-git'=>\$resolve_git) or die "Invalid options\n";
 die "Expected Prepare or Submit and --work-dir\n" unless $work && $action =~ /\A(?:Prepare|Submit)\z/;
 die "Invalid tool ID\n" unless $tool =~ /\A[a-z][a-z0-9_]{0,63}\z/;
 $server =~ s{/$}{};
@@ -46,6 +50,7 @@ sub request {
     my @args = ('-q','-fsS','--noproxy','*','--connect-timeout',2,'--max-time',4,
         '-H',"X-Pulse-LAN-Device: $device");
     if ($body) {
+        push @args,'-H',"X-Pulse-LAN-GitHub: $github_login" if defined $github_login;
         if (defined $label && length $label) {
             my $encoded = $label;
             $encoded =~ s/([^A-Za-z0-9_.~-])/sprintf("%%%02X",ord($1))/ge;
@@ -59,6 +64,12 @@ sub request {
     return $json->decode($output);
 }
 sub cursor { request("/api/v1/report-cursor?source_id=$_[0]") }
+sub usage_totals {
+    my ($rows)=@_;
+    my %totals=(events=>scalar @$rows,map {$_=>0} @counts);
+    for my $row (@$rows) { $totals{$_} += $row->{$_} // 0 for @counts }
+    return \%totals;
+}
 sub narrative {
     my $text = $_[0] // '';
     $text =~ s{\x60\x60\x60.*?(?:\x60\x60\x60|\z)|https?://\S+|\S+\@\S+|(?:^|\s)[~/]\S+|(?:\b\S*(?:token|secret|password|api[_-]?key)\S*|\S{0,8}(?:\x{5bc6}\x{7801}|\x{53e3}\x{4ee4}|\x{4ee4}\x{724c}))\s*[:=\x{ff1a}]\s*\S+}{ [redacted] }gis;
@@ -68,6 +79,8 @@ sub narrative {
 
 if ($action eq 'Submit') {
     my $plan = read_json($plan_file);
+    $label //= $plan->{label};
+    $github_login //= $plan->{github_login};
     my %edits;
     if (-f "$work/summaries.json") {
         for my $edit (@{read_json("$work/summaries.json")}) {
@@ -76,6 +89,7 @@ if ($action eq 'Submit') {
         }
     }
     my ($sent,$advanced) = (0,0);
+    my @receipts;
     for my $batch (@{$plan->{batches}}) {
         my ($source,$end) = @{$batch->{cursor}}{qw(source_id to_offset)};
         my $edit = $edits{$source} // {};
@@ -100,16 +114,47 @@ if ($action eq 'Submit') {
         }
         die "Unexpected receipt\n" unless $receipt->{status} eq 'committed'
             && $receipt->{batch_id} eq $batch->{batch_id} && $receipt->{to_offset} == $end;
+        my $expected=usage_totals($batch->{usage});
+        die "Missing server usage receipt; update the server\n" unless $receipt->{usage};
+        for my $key ('events',@counts) {
+            die "Server usage mismatch: $key\n" unless defined $receipt->{usage}{$key} && $receipt->{usage}{$key} == $expected->{$key};
+        }
+        push @receipts,{batch_id=>$batch->{batch_id},usage=>$receipt->{usage}};
         $sent++;
     }
     print $json->encode({submitted_batches=>$sent,server_cursor_already_advanced=>$advanced,
+        receipts=>\@receipts,usage_verified=>($advanced ? JSON::PP::false : JSON::PP::true),
         bytes_read=>$plan->{bytes_read},backlog=>$plan->{backlog}}),"\n";
     exit;
 }
 
 mkdir $work or die "Prepare requires a new working directory\n";
+my $directory=request('/api/v1/report-directory');
+die "Server upgrade required: protocol 3 usage receipts\n" unless ($directory->{protocol_version}//0)>=3;
+if (defined $github_login) {
+    die "Invalid GitHub login\n" unless $github_login =~ /\A[a-zA-Z0-9-]{1,39}\z/;
+    my @matches=grep {lc($_->{github_login}//'') eq lc($github_login)} @{$directory->{members}};
+    $label=@matches==1 ? $matches[0]{display_name} : $github_login unless defined $label;
+}
+make_path($state_dir,{mode=>0700}) unless -d $state_dir;
+my $state_file="$state_dir/.pulse-state-".substr(sha256_hex($server),0,12).'.json';
+my $scan_state=-f $state_file ? read_json($state_file) : {report_from=>now(time()-7*86400),next_index=>0};
+$label //= $scan_state->{label};
+$scan_state->{label}=$label if defined $label;
+$github_login //= $scan_state->{github_login};
+$scan_state->{github_login}=$github_login if defined $github_login;
+if ($scan_state->{pending_work} && -f "$scan_state->{pending_work}/plan.json") {
+    open my $resume,'-|',$^X,$0,'--action','Submit','--work-dir',$scan_state->{pending_work},'--server',$server
+        or die "Cannot resume pending upload\n";
+    my $recovery=do {local $/; <$resume>};
+    close $resume or die "Pending upload failed; retained at $scan_state->{pending_work}\n";
+    my $receipt=$json->decode($recovery);
+    $scan_state->{recovery_unverified}=!$receipt->{usage_verified} ? JSON::PP::true : JSON::PP::false;
+    delete $scan_state->{pending_work};
+}
+my %known=map {lc($_->{source_id})=>1} @{$directory->{sources}//[]};
 my $root = ($ENV{CODEX_HOME} // "$ENV{HOME}/.codex") . '/sessions';
-my $cutoff = now(time()-7*86400);
+my $cutoff = $scan_state->{report_from};
 my @files;
 for my $year (entries($root,qr/\A[0-9]{4}\z/)) {
     next if -l $year;
@@ -120,18 +165,20 @@ for my $year (entries($root,qr/\A[0-9]{4}\z/)) {
             for my $file (entries($day,qr/\.jsonl\z/)) {
                 next unless -f $file && !-l $file;
                 my $mtime = (stat($file))[9];
-                push @files,[$file,$mtime] if defined $mtime && now($mtime) ge $cutoff;
+                my ($file_id)= $file =~ /([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:[^\/]*)\.jsonl\z/i;
+                push @files,[$file,$mtime] if defined $mtime && (now($mtime) ge $cutoff || ($file_id && $known{lc $file_id}));
             }
         }
     }
 }
 @files = sort { $a->[0] cmp $b->[0] } @files;
-if (@files > 8) {
-    my $start = int(time()/1800) % @files;
+if (@files) {
+    my $start = ($scan_state->{next_index}//0) % @files;
     push @files,splice @files,0,$start;
 }
 my (@batches,@evidence,%skips,%seen);
 my ($bytes,$checked,$backlog) = (0,0,JSON::PP::false);
+my ($cursor_queries,$unchanged,$excluded,$baseline_events,$reset_events,$unmeasured)=(0,0,0,0,0,0);
 my $deadline = time()+12;
 for my $entry (@files) {
     if ($checked>=8 || $bytes>=1048576 || time()>=$deadline) { $backlog=JSON::PP::true; last }
@@ -142,25 +189,32 @@ for my $entry (@files) {
     # Recent Codex builds can emit a session_meta line larger than 16 KiB
     # because it includes the resolved instruction set. Keep the read bounded,
     # but large enough to decode that first JSONL record in the fast path.
-    $bytes += read($fh,$head,min(65536,1048576-$bytes)) // 0;
+    while (index($head,"\n")<0 && $bytes<1048576) {
+        my $chunk='';
+        my $n=read($fh,$chunk,min(4096,1048576-$bytes)) // 0;
+        last unless $n;
+        $head.=$chunk; $bytes+=$n;
+    }
     my ($first) = $head =~ /\A([^\n]+)\n/;
     my $meta = eval { $json->decode($first // '') };
-    if (!$meta || $meta->{type} ne 'session_meta') { $skips{$checked}='no_session_metadata'; next }
+    if (!$meta || $meta->{type} ne 'session_meta') { $skips{$checked}=index($head,"\n")<0 ? 'metadata_exceeds_budget_or_incomplete' : 'no_session_metadata'; next }
     my $p = $meta->{payload};
     my $source = lc($p->{id} // '');
     next unless $source =~ $uuid;
-    next if $head =~ /PROJECT_PULSE_AUTOMATION/ || ($exclude // '') eq $source ||
-        $p->{parent_thread_id} || (ref($p->{source}) eq 'HASH' && $p->{source}{subagent});
+    if ($scan_state->{excluded}{$source}) { $excluded++; next }
+    if (($exclude // '') eq $source || $p->{parent_thread_id} || (ref($p->{source}) eq 'HASH' && $p->{source}{subagent})) { $excluded++; next }
     if ($seen{$source}++) { $skips{$checked}='duplicate_source'; next }
     my $cursor = cursor($source);
+    $cursor_queries++;
     my $from = $cursor->{offset};
-    next if $size == $from;
+    if ($size == $from) { $unchanged++; next }
     if ($size < $from) { $skips{$checked}='file_truncated'; next }
     seek($fh,$from,0) or die "Cannot seek log\n";
     my $buffer = '';
     $bytes += read($fh,$buffer,min($size-$from,1048576-$bytes)) // 0;
     my $end = $from;
     my $context = $cursor->{context} // {};
+    my $source_cutoff=$context->{report_from} // ($from>0 ? '1970-01-01T00:00:00Z' : $cutoff);
     my ($model,$activity,$state) = ($context->{model},undef,undef);
     my $agent = id("codex:agent:$source");
     my (@usage,@notes);
@@ -171,23 +225,43 @@ for my $entry (@files) {
         my $position = $end;
         $end = $from+pos($buffer);
         my $data = $row->{payload} // {};
+        # Inspect actual user records, never instructions embedded in session_meta.
+        if (!$scan_state->{first_user_seen}{$source} && $row->{type} eq 'event_msg' && ($data->{type}//'') eq 'user_message') {
+            $scan_state->{first_user_seen}{$source}=JSON::PP::true;
+            if (($data->{message}//'') =~ /\APROJECT_PULSE_AUTOMATION(?:\b|\x{3002})/) {
+                $scan_state->{excluded}{$source}=JSON::PP::true;
+                @usage=(); @notes=(); $end=$from; $skips{$checked}='reporting_session'; last;
+            }
+        }
         if ($row->{type} eq 'turn_context' && ($data->{model}//'') =~ /\A[\w.\/:\-]{1,100}\z/) {
             $model = $data->{model};
         }
         next unless $row->{type} eq 'event_msg';
         my $at = $row->{timestamp} // '';
         next unless $at =~ /\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z\z/;
-        my $recent = substr($at,0,19) ge substr($cutoff,0,19);
+        my $recent = substr($at,0,19) ge substr($source_cutoff,0,19);
         my $type = $data->{type} // '';
         if ($type eq 'token_count' && ref($data->{info}{total_token_usage}) eq 'HASH') {
             my $total = $data->{info}{total_token_usage};
             my %delta;
+            my $initial=!defined $context->{input_tokens} && !defined $context->{output_tokens};
+            my $reset=grep {defined $context->{$_} && defined $total->{$_} && $total->{$_}<$context->{$_}} @counts;
+            $baseline_events++ if $initial;
+            $reset_events++ if $reset;
             for my $key (@counts) {
                 my ($old,$new) = ($context->{$key},$total->{$key});
                 $new = undef unless defined $new && $new =~ /\A\d+\z/ && $new<=9007199254740991;
-                $delta{$key} = defined $old && defined $new && $new >= $old ? $new-$old : undef;
+                my $last=$data->{info}{last_token_usage}{$key};
+                # First cumulative snapshot is attributable to this session. On
+                # reset, only use the explicit last-turn value, never guess.
+                $delta{$key} = $reset ? (defined $last && $last =~ /\A\d+\z/ && defined $new && $last<=$new ? 0+$last : undef)
+                    : defined $new ? ($initial ?
+                        ((($p->{timestamp}//$meta->{timestamp}//'') ge $source_cutoff) ? 0+$new :
+                            defined $last && $last =~ /\A\d+\z/ && $last<=$new ? 0+$last : undef)
+                        : defined $old && $new >= $old ? $new-$old : undef) : undef;
                 $context->{$key} = $new;
             }
+            $unmeasured++ if $recent && grep {!defined $delta{$_}} @counts;
             if ($recent && (($delta{input_tokens}//0)>0 || ($delta{output_tokens}//0)>0)) {
                 $delta{cached_input_tokens}=undef if defined $delta{input_tokens}
                     && ($delta{cached_input_tokens}//0)>$delta{input_tokens};
@@ -209,8 +283,14 @@ for my $entry (@files) {
     if ($end == $from) { $skips{$checked} //= 'no_complete_line_within_budget'; next }
     my (@sessions,@agents);
     if ($activity) {
-        my ($remote) = ($p->{git}{repository_url}//'') =~ m{\A(?:https://github\.com/|git\@github\.com:|ssh://git\@github\.com/)([\w.-]+/[\w.-]+?)(?:\.git)?/?\z}i;
-        my ($repo) = grep { defined $remote && lc($_) eq lc($remote) } @{$cursor->{repositories}};
+        my $remote_url=$p->{git}{repository_url}//'';
+        if ($resolve_git && $p->{cwd} && -d $p->{cwd}) {
+            if (open my $git,'-|','/usr/bin/git','-C',$p->{cwd},'config','--local','--get','remote.origin.url') {
+                my $value=<$git>; close $git; chomp($value //= ''); $remote_url=$value if $value;
+            }
+        }
+        my ($remote) = $remote_url =~ m{\A(?:https://github\.com/|git\@github\.com:|ssh://git\@(?:github\.com|ssh\.github\.com)(?::443)?/)([\w.-]+/[\w.-]+?)(?:\.git)?/?\z}i;
+        my $repo=defined $remote ? lc($remote) : undef;
         my ($folder) = ($p->{cwd}//'') =~ m{([^/\\:]+)[/\\]*\z};
         $folder=undef if defined $folder && ($folder =~ /[\x00-\x1f]/ || length($folder)>120 || $folder =~ /\A\.{1,2}\z/);
         push @sessions,{session_id=>$source,tool=>'codex',revision=>$end,repository=>$repo,started_at=>undef,
@@ -224,13 +304,20 @@ for my $entry (@files) {
     }
     my $batch_id = lc qx{/usr/bin/uuidgen};
     chomp $batch_id;
-    push @batches,{schema_version=>1,batch_id=>$batch_id,sent_at=>now(),collector_version=>'2.1.0',
+    push @batches,{schema_version=>1,batch_id=>$batch_id,sent_at=>now(),collector_version=>'3.0.0',
         sessions=>\@sessions,agents=>\@agents,summaries=>[],projects=>[],usage=>\@usage,
         cursor=>{source_id=>$source,from_offset=>$from,to_offset=>$end,
-            context=>{model=>$model,map { $_=>$context->{$_} } @counts}}};
+            context=>{model=>$model,report_from=>$source_cutoff,map { $_=>$context->{$_} } @counts}}};
 }
-write_json($plan_file,{batches=>\@batches,bytes_read=>$bytes,backlog=>$backlog});
-print $json->encode({prepared_batches=>scalar @batches,bytes_read=>$bytes,backlog=>$backlog,skipped=>\%skips,evidence=>\@evidence}),"\n";
+my $diagnostics={checked_files=>$checked,cursor_queries=>$cursor_queries,unchanged_files=>$unchanged,excluded_files=>$excluded,
+    recovery_unverified=>$scan_state->{recovery_unverified}//JSON::PP::false,
+    initial_snapshots=>$baseline_events,counter_resets=>$reset_events,unmeasured_snapshots=>$unmeasured,skipped=>\%skips};
+$scan_state->{next_index}=($scan_state->{next_index}//0)+$checked;
+$scan_state->{pending_work}=$work if @batches;
+write_json($plan_file,{batches=>\@batches,bytes_read=>$bytes,backlog=>$backlog,label=>$label,github_login=>$github_login});
+write_json("$state_file.tmp",$scan_state); rename "$state_file.tmp",$state_file or die "Cannot persist scan progress\n";
+print $json->encode({collector_version=>'3.0.0',server=>$server,prepared_batches=>scalar @batches,usage=>usage_totals([map {@{$_->{usage}}} @batches]),
+    bytes_read=>$bytes,backlog=>$backlog,diagnostics=>$diagnostics,evidence=>\@evidence}),"\n";
 sub min { $_[0]<$_[1] ? $_[0] : $_[1] }
 
 sub entries {
