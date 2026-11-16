@@ -6,11 +6,13 @@
 
 ## 下载上报包
 
-**[下载最新上报 ZIP：project-pulse-report-3.2.0.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.2.0-20261116/project-pulse-report-3.2.0.zip)**
+**[下载最新上报 ZIP：project-pulse-report-3.3.0.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.3.0-20261116/project-pulse-report-3.3.0.zip)**
 
-当前版本：**3.2.0**。
+当前版本：**3.3.0**。
 
-本版新增客户端团队数据修正接口：可修改全员的摘要、项目归属、目标、里程碑和状态，保留审计并检查版本冲突；需要真正服务端执行010迁移、启用 `PULSE_TEAM_EDITS=1` 后才可使用。普通增量上报仍兼容既有协议3。
+本版先只读列出本机项目，等待用户多选；确认后仅上报所选项目，30分钟任务沿用选择，新项目先确认再加入。选择前不试报、不上传、不设置任务。
+
+保留客户端团队数据修正接口：可修改全员的摘要、项目归属、目标、里程碑和状态，保留审计并检查版本冲突；需要真正服务端执行010迁移、启用 `PULSE_TEAM_EDITS=1` 后才可使用。普通增量上报仍兼容既有协议3。
 
 继续保留宽松Agent识别：明确运行状态保留2小时窗口，缺少开始事件时可根据新消息、模型输出、工具调用和用量补足；明确结束的任务不会被尾部Token快照复活。项目是否在研仍独立判断，不按时间超时。
 
@@ -22,10 +24,12 @@
 
 1. 解压到长期保留的目录，例如 `Documents/project-pulse-report`。不要在 ZIP 预览或临时目录里运行。
 2. 用这台电脑上的 Codex 打开解压后的 `project-pulse-report` 文件夹。
-3. 复制下面整段提示词发送给 Codex。它会先试报，再创建或更新每 30 分钟同步任务。
+3. 复制下面整段提示词发送给 Codex。它会先列出本机项目供你选择，等你确认后仅上报所选项目，再创建或更新每 30 分钟同步任务。
 
 ```text
-PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，执行完整上报与定时同步流程。
+PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，先按project-selection.md只读列出本机项目让我选择，等我确认后再对所选项目执行完整上报与定时同步流程。
+
+第一步只做只读盘点：列出项目编号、仓库或本地工作区、已识别主会话数量及待确认项，让我多选。选择前不得执行Prepare／Submit、上传或设置任务，不默认全选。确认后保存私有选择文件；每轮Prepare和Submit必须限制OnlySource为所选项目，后续30分钟任务沿用此范围，新项目先询问再加入。
 
 我授权你识别本机 Codex 主会话及相关项目、成员、GitHub仓库和PR、模型与真实Token用量，并生成脱敏摘要、项目目标和里程碑。先主动查找并复用已有信息，仍缺信息或证据冲突时，再集中询问我。排除当前上报会话，不编造数据。
 
@@ -69,9 +73,9 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，执�
 
 ## 更新已有客户端
 
-下载新 ZIP，覆盖原永久解压目录，保留 `.pulse-state-*.json`、`.pulse-project-paths.json`、`.pulse-pending/`，再发送上面的提示词。更新原任务的正文并重新核验，不重复创建。待发请求先恢复，不清空游标或重新导入历史 Token。
+下载新 ZIP，覆盖原永久解压目录，保留 `.pulse-state-*.json`、`.pulse-project-paths.json`、`.pulse-project-selection.json`、`.pulse-pending/`，再发送上面的提示词。更新原任务的正文并重新核验，不重复创建。待发请求先恢复，不清空游标或重新导入历史 Token。
 
-当前包3.2.0使用协议3。真正服务端需先执行009_project_lifecycle迁移并重启，提供 `usage_receipt`、`project_mapping_backfill`、`client_pr_ingest`、`client_project_status` 能力。Agent识别窗口现为2小时，并补足缺少开始事件的活动识别；已完成、取消或失败的任务不因此复活。更新ZIP不会自动更新另一台电脑的服务端或已存在的定时任务。
+当前包3.3.0使用协议3。真正服务端需先执行009_project_lifecycle迁移并重启，提供 `usage_receipt`、`project_mapping_backfill`、`client_pr_ingest`、`client_project_status` 能力。Agent识别窗口现为2小时，并补足缺少开始事件的活动识别；已完成、取消或失败的任务不因此复活。更新ZIP不会自动更新另一台电脑的服务端或已存在的定时任务。
 
 ## 服务端与开发
 
@@ -81,6 +85,6 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，执�
 - 真实数据使用 PostgreSQL；迁移、局域网部署、备份及独立令牌模式见 [服务端部署说明](docs/deployment.md)。
 - 客户端可通过 [团队数据修正接口](docs/team-edits.md) 修改全员的摘要、项目归属、目标、里程碑和状态；真正服务端需应用010迁移并启用 `PULSE_TEAM_EDITS=1`。
 - `npm test` 运行测试；在可丢弃的已迁移数据库设置 `DATABASE_URL` 后运行 `npm run test:integration`。便携采集器 CI 覆盖 macOS、Windows 和 Ubuntu。
-- 构建上报包：`sh ops/report/build-package.sh /绝对路径/project-pulse-report-3.2.0.zip`。包内不包含本机状态、路径映射、日志或凭证。
+- 构建上报包：`sh ops/report/build-package.sh /绝对路径/project-pulse-report-3.3.0.zip`。包内不包含本机状态、路径映射、日志或凭证。
 
 [技术方案](技术方案.md) · [上报详细流程](ops/report/README.md) · [手动协议及其他来源适配](docs/lan-report.md)

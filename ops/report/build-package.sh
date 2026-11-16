@@ -20,6 +20,7 @@ trap 'rm -rf "$stage"' EXIT HUP INT TERM
 
 mkdir "$stage/project-pulse-report"
 cp "$here/README.md" "$stage/project-pulse-report/README.md"
+cp "$here/project-selection.md" "$stage/project-pulse-report/project-selection.md"
 cp "$here/PROMPT.txt" "$stage/project-pulse-report/PROMPT.txt"
 cp "$here/VERSION" "$stage/project-pulse-report/VERSION"
 cp "$here/UPGRADE.md" "$stage/project-pulse-report/UPGRADE.md"
@@ -31,7 +32,7 @@ cp "$repo/docs/lan-report.md" "$stage/project-pulse-report/lan-report.md"
 cp "$repo/docs/team-edits.md" "$stage/project-pulse-report/team-edits.md"
 chmod 755 "$stage/project-pulse-report/pulse-report.pl"
 chmod 755 "$stage/project-pulse-report/pulse-report-linux.sh"
-(cd "$stage/project-pulse-report" && /usr/bin/shasum -a 256 README.md PROMPT.txt VERSION UPGRADE.md pulse-report.pl pulse-report.ps1 pulse-report-linux.sh project-paths.example.json lan-report.md team-edits.md > SHA256SUMS)
+(cd "$stage/project-pulse-report" && /usr/bin/shasum -a 256 README.md PROMPT.txt VERSION UPGRADE.md pulse-report.pl pulse-report.ps1 pulse-report-linux.sh project-paths.example.json lan-report.md team-edits.md project-selection.md > SHA256SUMS)
 
 rm -f "$output"
 (cd "$stage" && /usr/bin/zip -X -q -r "$output" project-pulse-report)

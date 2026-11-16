@@ -126,8 +126,25 @@ sub narrative {
     return substr($text,0,240);
 }
 
+sub check_scope {
+    my ($path,$plan)=@_;
+    die "Selected projects require explicit OnlySource scope\n" if -f "$state_dir/.pulse-project-selection.json" && !@only_sources && !@{$plan->{allowed_sources}//[]};
+    my @sources=map {$_->{cursor}{source_id}} @{$plan->{batches}//[]};
+    for my $entry (['pulls.json',undef],['statuses.json',undef],['pr-request.json','pulls'],['status-request.json','statuses']) {
+        next unless -f "$path/$entry->[0]";
+        my $data=read_json("$path/$entry->[0]");
+        my $rows=$entry->[1] ? $data->{$entry->[1]} : $data;
+        push @sources,map {$_->{source_session_id}} @$rows;
+    }
+    for my $allowed (\@only_sources,$plan->{allowed_sources}//[]) {
+        next unless @$allowed;
+        my %allowed=map {lc($_)=>1} @$allowed;
+        die "Report outside selected project scope; retain pending files and confirm scope\n" if grep {!defined($_) || !$allowed{lc($_)}} @sources;
+    }
+}
 if ($action eq 'Submit') {
     my $plan = read_json($plan_file);
+    check_scope($work,$plan);
     $label //= $plan->{label};
     $github_login //= $plan->{github_login};
     my $pulls=-f "$work/pulls.json" ? read_json("$work/pulls.json") : [];
@@ -159,12 +176,12 @@ if ($action eq 'Submit') {
         my $project = $session ? ($session->{repository} // $session->{workspace_name}) : undef;
         if ($session && $edit->{summary}) {
             $batch->{summaries} = [{summary_id=>id("codex:summary:$source:$end"),session_id=>$source,
-                observed_at=>$session->{last_activity_at},summary=>$edit->{summary},summarizer_tool=>$tool,prompt_version=>'3.2.0'}];
+                observed_at=>$session->{last_activity_at},summary=>$edit->{summary},summarizer_tool=>$tool,prompt_version=>'3.3.0'}];
         }
         if ($project && $edit->{goal} && $edit->{milestones}) {
             $batch->{projects} = [{report_id=>id("codex:project:$source:$end:$project"),source_session_id=>$source,
                 project_key=>$project,goal=>$edit->{goal},milestones=>$edit->{milestones},
-                observed_at=>$session->{last_activity_at},summarizer_tool=>$tool,prompt_version=>'3.2.0'}];
+                observed_at=>$session->{last_activity_at},summarizer_tool=>$tool,prompt_version=>'3.3.0'}];
         }
         my $body = "$work/$batch->{batch_id}.json";
         write_json($body,$batch) unless -e $body;
@@ -206,12 +223,21 @@ if ($action eq 'Submit') {
         die "Unexpected PR receipt\n" unless $pr_receipt->{status} eq 'committed' &&
             $pr_receipt->{batch_id} eq $expected->{batch_id} && $pr_receipt->{pulls}==@{$expected->{pulls}};
     }
+    my $finished_state="$state_dir/.pulse-state-".substr(sha256_hex($server),0,12).'.json';
+    if (!$advanced && -f $finished_state) {
+        my $saved=read_json($finished_state);
+        if ($saved->{pending_work} && (abs_path($saved->{pending_work}) // File::Spec->rel2abs($saved->{pending_work})) eq $work) {
+            delete $saved->{pending_work};write_json("$finished_state.tmp",$saved);
+            rename "$finished_state.tmp",$finished_state or die "Cannot clear completed pending report\n";
+        }
+    }
     print $json->encode({submitted_batches=>$sent,server_cursor_already_advanced=>$advanced,pr_receipt=>$pr_receipt,status_receipt=>$status_receipt,
         receipts=>\@receipts,usage_verified=>($advanced ? JSON::PP::false : JSON::PP::true),
         bytes_read=>$plan->{bytes_read},backlog=>$plan->{backlog}}),"\n";
     exit;
 }
 
+die "Selected projects require explicit OnlySource scope\n" if -f "$state_dir/.pulse-project-selection.json" && !@only_sources;
 mkdir $work or die "Prepare requires a new working directory\n";
 my $directory=request('/api/v1/report-directory');
 die "Server upgrade required: protocol 3 usage receipts\n" unless ($directory->{protocol_version}//0)>=3;
@@ -253,7 +279,8 @@ sub resolve_project {
     return undef;
 }
 if ($scan_state->{pending_work} && -f "$scan_state->{pending_work}/plan.json") {
-    open my $resume,'-|',$^X,$0,'--action','Submit','--work-dir',$scan_state->{pending_work},'--server',$server,'--state-dir',$state_dir
+    check_scope($scan_state->{pending_work},read_json("$scan_state->{pending_work}/plan.json"));
+    open my $resume,'-|',$^X,$0,'--action','Submit','--work-dir',$scan_state->{pending_work},'--server',$server,'--state-dir',$state_dir,(map {('--only-source',$_)} @only_sources)
         or die "Cannot resume pending upload\n";
     my $recovery=do {local $/; <$resume>};
     close $resume or die "Pending upload failed; retained at $scan_state->{pending_work}\n";
@@ -354,7 +381,7 @@ for my $entry (@files) {
         }
         if ($resolved_repo && $cursor->{session_exists} && ($cursor->{project_key}//'') ne $resolved_repo) {
             if (grep {$_ eq 'project_mapping_backfill'} @{$directory->{capabilities}//[]}) {
-                push @batches,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),collector_version=>'3.2.0',
+                push @batches,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),collector_version=>'3.3.0',
                     sessions=>[],agents=>[],summaries=>[],projects=>[],usage=>[],
                     mappings=>[{session_id=>$source,repository=>$resolved_repo}],
                     cursor=>{source_id=>$source,from_offset=>$from,to_offset=>$from,context=>$cursor->{context}}};
@@ -458,7 +485,7 @@ for my $entry (@files) {
         }
     }
     my $batch_id = uuid4();
-    push @batches,{schema_version=>1,batch_id=>$batch_id,sent_at=>now(),collector_version=>'3.2.0',
+    push @batches,{schema_version=>1,batch_id=>$batch_id,sent_at=>now(),collector_version=>'3.3.0',
         sessions=>\@sessions,agents=>\@agents,summaries=>[],projects=>[],usage=>\@usage,
         cursor=>{source_id=>$source,from_offset=>$from,to_offset=>$end,
             context=>{model=>$model,report_from=>$source_cutoff,map { $_=>$context->{$_} } @counts}}};
@@ -470,9 +497,9 @@ my $diagnostics={checked_files=>$checked,cursor_queries=>$cursor_queries,unchang
     initial_snapshots=>$baseline_events,counter_resets=>$reset_events,unmeasured_snapshots=>$unmeasured,skipped=>\%skips};
 $scan_state->{next_index}=($scan_state->{next_index}//0)+$checked;
 $scan_state->{pending_work}=$work if @batches;
-write_json($plan_file,{batches=>\@batches,bytes_read=>$bytes,backlog=>$backlog,label=>$label,github_login=>$github_login});
+write_json($plan_file,{batches=>\@batches,allowed_sources=>\@only_sources,bytes_read=>$bytes,backlog=>$backlog,label=>$label,github_login=>$github_login});
 write_json("$state_file.tmp",$scan_state); rename "$state_file.tmp",$state_file or die "Cannot persist scan progress\n";
-print $json->encode({collector_version=>'3.2.0',server=>$server,prepared_batches=>scalar @batches,usage=>usage_totals([map {@{$_->{usage}}} @batches]),
+print $json->encode({collector_version=>'3.3.0',server=>$server,prepared_batches=>scalar @batches,usage=>usage_totals([map {@{$_->{usage}}} @batches]),
     bytes_read=>$bytes,backlog=>$backlog,diagnostics=>$diagnostics,evidence=>\@evidence}),"\n";
 sub min { $_[0]<$_[1] ? $_[0] : $_[1] }
 

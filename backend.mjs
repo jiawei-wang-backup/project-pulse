@@ -501,7 +501,7 @@ async function reportDirectory(pool, lan) {
       ORDER BY c.source_id`,[digest(lan.credential)])
   ]);
   if (current.rows[0]?.revoked_at) fail(401,'invalid_device');
-  return {protocol_version:3, recommended_collector_version:'3.2.0',
+  return {protocol_version:3, recommended_collector_version:'3.3.0',
     capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill','client_pr_ingest','client_project_status',
       ...(process.env.PULSE_TEAM_EDITS==='1' ? ['team_metadata_edit'] : [])],sources:sources.rows,
     members:members.rows,repositories:repositories.rows,

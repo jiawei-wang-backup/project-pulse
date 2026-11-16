@@ -8,3 +8,4 @@ node_modules/
 .pulse-state-*.json.tmp
 .pulse-pending/
 .pulse-project-paths.json
+.pulse-project-selection.json

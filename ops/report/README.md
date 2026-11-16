@@ -1,6 +1,6 @@
 # Project Pulse macOS / Windows / Linux 快速上报包
 
-版本以 `VERSION` 为准（当前 3.2.0），需要服务端协议3、client_project_status能力，以及已应用009_project_lifecycle迁移。先阅读 `UPGRADE.md`，升级时保留隐藏状态和待续传目录。包内SHA256SUMS可核对完整性。
+版本以 `VERSION` 为准（当前 3.3.0），需要服务端协议3、client_project_status能力，以及已应用009_project_lifecycle迁移。先阅读 `UPGRADE.md`，升级时保留隐藏状态和待续传目录。包内SHA256SUMS可核对完整性。
 
 这是客户端上报包。解压后不要移动包内文件，在 Codex 打开解压后的 `project-pulse-report` 目录，把 `PROMPT.txt` 全文发给 Codex。不要直接在 ZIP 预览里执行。
 
@@ -8,14 +8,16 @@
 
 服务端启用 `team_metadata_edit` 能力后，客户端也可修正全员的摘要、项目归属、目标、里程碑和状态，操作流程见包内 `team-edits.md`。先查询最新记录和version，明确目标成员与来源会话，再修改和核验回执；不能直接写数据库或凭空调整Token。
 
-**[下载最新上报 ZIP：project-pulse-report-3.2.0.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.2.0-20261116/project-pulse-report-3.2.0.zip)**
+**[下载最新上报 ZIP：project-pulse-report-3.3.0.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.3.0-20261116/project-pulse-report-3.3.0.zip)**
 
-本版3.2.0新增全员数据修正说明及接口，启用步骤见 `team-edits.md`，服务端未启用时不能宣称可修改。继续保留宽松Agent识别：运行窗口2小时，补足消息／输出／工具／用量活动信号，明确结束仍退出。覆盖更新原永久目录后，重新发送下面提示词以更新原30分钟任务，不能只下载新包而继续运行旧目录。
+本版3.3.0先盘点项目供用户选择，确认后仅上报所选项目并创建30分钟任务；详见 `project-selection.md`。保留全员数据修正说明及接口，启用步骤见 `team-edits.md`，服务端未启用时不能宣称可修改。继续保留宽松Agent识别：运行窗口2小时，补足消息／输出／工具／用量活动信号，明确结束仍退出。覆盖更新原永久目录后，重新发送下面提示词以更新原30分钟任务，不能只下载新包而继续运行旧目录。
 
 解压到永久目录，用Codex打开本文件夹，复制下面整段发送；也可直接发送PROMPT.txt全文。不要仅打开ZIP预览。
 
 ```text
-PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，执行完整上报与定时同步流程。
+PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，先按project-selection.md只读列出本机项目让我选择，等我确认后再对所选项目执行完整上报与定时同步流程。
+
+第一步只做只读盘点：列出项目编号、仓库或本地工作区、已识别主会话数量及待确认项，让我多选。选择前不得执行Prepare／Submit、上传或设置任务，不默认全选。确认后保存私有选择文件；每轮Prepare和Submit必须限制OnlySource为所选项目，后续30分钟任务沿用此范围，新项目先询问再加入。
 
 我授权你识别本机 Codex 主会话及相关项目、成员、GitHub仓库和PR、模型与真实Token用量，并生成脱敏摘要、项目目标和里程碑。先主动查找并复用已有信息，仍缺信息或证据冲突时，再集中询问我。排除当前上报会话，不编造数据。
 
@@ -36,6 +38,10 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，执�
 - 快速流程使用局域网设备指纹，不需要 `~/.project-pulse/config.json`，也不需要设备令牌。
 - macOS／Linux 使用系统 Perl（含 JSON::PP、Digest::SHA）和 curl，Windows 使用系统 Windows PowerShell 和 curl.exe。其他机器必须能访问上述地址。Linux入口检查依赖，缺少时明确报告，不自动安装。
 - 项目、会话、PR、模型、Token、摘要、目标、里程碑等均由客户端Codex主动识别和核验，脚本负责解析差分与提交，服务端校验、存储、展示。客户端通过 `pulls.json` 上报查证后的PR，不能依赖服务端抓取代替识别。服务端原PR同步脚本保留为管理员可选补充。
+
+## 先选项目
+
+先阅读包内 `project-selection.md`，只读列出本机项目供用户多选。用户确认之前不执行Prepare／Submit，也不创建任务。确认后保存私有 `.pulse-project-selection.json`，后续仅按所选项目的OnlySource范围试报与定时同步。此选择不随ZIP分发。
 
 ## 试报流程
 

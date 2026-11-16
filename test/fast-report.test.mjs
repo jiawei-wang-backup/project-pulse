@@ -100,8 +100,13 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
     assert.equal(prepared.usage.cached_input_tokens,52);
     assert.equal(prepared.usage.output_tokens,13);
     assert.equal(prepared.diagnostics.counter_resets,1);
+    const outside=windows?['-OnlySource',randomUUID()]:['--only-source',randomUUID()];
+    await assert.rejects(invoke('Submit',work,outside),/outside selected project scope/);
+    assert.equal(committed,0);
     rejectNext=true;
     await assert.rejects(invoke('Submit',work));
+    await assert.rejects(invoke('Prepare',join(root,'outside-pending'),outside),/outside selected project scope/);
+    assert.equal(committed,0);
     // Prepare automatically retries the saved immutable request before scanning.
     await invoke('Prepare',join(root,'retry'));
     assert.deepEqual(totals,{input_tokens:125,cached_input_tokens:52,output_tokens:13});
@@ -227,6 +232,12 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
     const scoped=await invoke('Prepare',scopedWork,windows?['-OnlySource',randomUUID()]:['--only-source',randomUUID()]);
     assert.equal(scoped.prepared_batches,0);
     assert.equal(scoped.usage.events,0);
+    // Scope is persisted in the plan: adding a foreign PR must not bypass it
+    // even if the Submit invocation omits OnlySource.
+    await writeFile(join(scopedWork,'pulls.json'),JSON.stringify([pr]));
+    await assert.rejects(invoke('Submit',scopedWork),/outside selected project scope/);
+    await writeFile(join(state,'.pulse-project-selection.json'),JSON.stringify({schema_version:1,projects:[]}));
+    await assert.rejects(invoke('Prepare',join(root,'missing-scope')),/require explicit OnlySource scope/);
   } finally {
     await new Promise(resolve=>server.close(resolve));
     await rm(root,{recursive:true,force:true});
