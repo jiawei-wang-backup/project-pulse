@@ -84,7 +84,7 @@ if ($Action -eq 'Submit') {
     $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
     if (!$Label) { $Label=$plan.label }
     if (!$GitHubLogin) { $GitHubLogin=$plan.github_login }
-    $pulls=@()
+    [object[]]$pulls=@()
     if (Test-Path -LiteralPath (Join-Path $WorkDir 'pulls.json')) {
         $rawPulls=Get-Content -LiteralPath (Join-Path $WorkDir 'pulls.json') -Raw -Encoding UTF8
         if (!$rawPulls.TrimStart().StartsWith('[')) {throw 'pulls.json must be an array.'}
@@ -100,7 +100,7 @@ if ($Action -eq 'Submit') {
         $pending | Add-Member -NotePropertyName pending_work -NotePropertyValue $WorkDir -Force
         WriteJson ($pendingPath+'.tmp') $pending;Move-Item -Force -LiteralPath ($pendingPath+'.tmp') -Destination $pendingPath
     }
-    $edits = @()
+    [object[]]$edits = @()
     if ([IO.File]::Exists($editsPath)) { $edits = ConvertFrom-Json -InputObject (Get-Content -LiteralPath $editsPath -Raw -Encoding UTF8) }
     $sent = 0
     $alreadyCommitted = 0
