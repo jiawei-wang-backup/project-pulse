@@ -6,7 +6,7 @@
 
 ## 下载与首次发送提示词
 
-[下载最新上报ZIP](https://github.com/jiawei-wang-dev/project-pulse/releases/latest/download/project-pulse-report-latest.zip) · [查看发布记录](https://github.com/jiawei-wang-dev/project-pulse/releases)
+[下载当前3.1.0上报ZIP](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.1.0-20261116-r2/project-pulse-report-3.1.0.zip) · [始终下载最新版本](https://github.com/jiawei-wang-dev/project-pulse/releases/latest/download/project-pulse-report-latest.zip) · [查看发布记录](https://github.com/jiawei-wang-dev/project-pulse/releases)
 
 解压到永久目录，用Codex打开本文件夹，复制下面整段发送；也可直接发送PROMPT.txt全文。不要仅打开ZIP预览。
 
