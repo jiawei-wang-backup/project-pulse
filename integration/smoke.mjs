@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { once } from 'node:events';
 import pg from 'pg';
 import { createPreviewServer } from '../server.mjs';
-import { createApi, ingest } from '../backend.mjs';
+import { createApi, ingest, dashboard, dashboardCutoff } from '../backend.mjs';
 import { resolveGitHubDeveloper } from '../db/github-identity.mjs';
 
 if (!process.env.DATABASE_URL) throw new Error('Use a disposable migrated database.');
@@ -82,7 +82,7 @@ try {
   const caseVariant={...heartbeat,batch_id:randomUUID(),projects:[{
     report_id:randomUUID(),source_session_id:source.session_id,project_key:'EXAMPLE/PULSE',
     goal:'验证仓库键大小写归一化',milestones:[{title:'合并项目键',state:'completed',evidence:'大小写变体已归入登记仓库'}],
-    observed_at:at,summarizer_tool:'claude_code',prompt_version:'2.0.0'
+    observed_at:new Date(Date.parse(at)+100).toISOString(),summarizer_tool:'claude_code',prompt_version:'2.0.0'
   }]};
   await ingest(pool,token,Buffer.from(JSON.stringify(caseVariant)));
   const canonicalData=await (await fetch(base+'/api/v1/dashboard')).json();
@@ -125,11 +125,11 @@ try {
     usage:{events:1,input_tokens:'10',cached_input_tokens:'2',output_tokens:'3'}};
   assert.deepEqual(await sendDirect(valid),receipt);
   assert.deepEqual(await sendDirect(valid),receipt);
-  const {project_report: previousProject,latest_summary,agent_state,project_key,session_exists,...position} = await readCursor();
+  const {project_report: previousProject,latest_summary,agent_state,project_key,session_exists,project_status,...position} = await readCursor();
   assert.deepEqual(position,{source_id:sourceId,offset:250,context,repositories:['example/pulse']});
   assert.equal(latest_summary,'验证了直报事件的事务写入');
   assert.equal(agent_state,null);
-  assert.equal(previousProject.goal,'采集并展示开发活动');
+  assert.equal(previousProject.goal,'验证仓库键大小写归一化');
   assert.equal((await sendDirect({...direct,batch_id:randomUUID()})).error,'cursor_conflict');
   const backfill={...direct,batch_id:randomUUID(),cursor:{...direct.cursor,from_offset:250,to_offset:250},
     projects:[{report_id:randomUUID(),source_session_id:sourceId,project_key:'example/pulse',
@@ -167,6 +167,39 @@ try {
   assert.equal(prData.pulls.filter(p=>p.full_name==='example/moved'&&p.number==='7').length,1);
   assert.equal((await readCursor()).offset,300);
   assert.equal((await pool.query('SELECT count(*) FROM usage_events WHERE device_id=$1 AND session_id=$2',[device,sourceId])).rows[0].count,'1');
+  const lifecycleSource=randomUUID(),lifecycleRepo=randomUUID();
+  const oldAt=new Date(Date.now()-40*86400000).toISOString();
+  await pool.query("INSERT INTO repositories(repository_id,github_host,github_id,full_name) VALUES ($1,'github.com',44,'example/lifecycle')",[lifecycleRepo]);
+  await pool.query("INSERT INTO sessions(device_id,session_id,tool_id,repository_id,revision,last_activity_at) VALUES ($1,$2,'codex',$3,1,$4)",[device,lifecycleSource,lifecycleRepo,oldAt]);
+  const assess=async(state,reason_code,observed_at=oldAt,source=lifecycleSource)=>{
+    const body={schema_version:1,batch_id:randomUUID(),sent_at:at,statuses:[{source_session_id:source,state,reason_code,observed_at,evidence:'根据项目目标和会话中的未完成项判断'}]};
+    const response=await fetch(base+'/api/v1/report-statuses',{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body)});
+    return {body,result:await response.json()};
+  };
+  assert.equal((await assess('blocked','dependency_unavailable')).result.status,'committed');
+  let life=await dashboard(pool,1);
+  assert.equal(life.projects.find(p=>p.full_name==='example/lifecycle').status,'blocked');
+  assert.ok(life.memberships.some(p=>p.full_name==='example/lifecycle'));
+  assert.ok(!life.sessions.some(p=>p.session_id===lifecycleSource));
+  for(const [index,state,reason] of [[1,'completed','goal_completed'],[2,'paused','user_paused'],[3,'on_track','progress_observed']]) {
+    assert.equal((await assess(state,reason,new Date(Date.parse(oldAt)+index*1000).toISOString())).result.status,'committed');
+    assert.equal((await dashboard(pool,1)).projects.find(p=>p.full_name==='example/lifecycle').status,state);
+  }
+  await assess('blocked','repeated_failure');
+  assert.equal((await dashboard(pool,1)).projects.find(p=>p.full_name==='example/lifecycle').status,'on_track');
+  assert.equal((await assess('paused','progress_observed')).result.error,'invalid_project_status');
+  assert.equal((await assess('blocked','repeated_failure',oldAt,randomUUID())).result.error,'status_session_missing');
+  const start=+dashboardCutoff(1),snapshot=start+12*3600000;
+  for(const [time,input,cached,output] of [[start-1,1000,800,100],[start,3,2,1],[snapshot,5,2,2],[snapshot+1,9000,8000,900]]) {
+    await pool.query("INSERT INTO usage_events(device_id,event_id,session_id,occurred_at,model,accounting,input_tokens,cached_input_tokens,output_tokens) VALUES ($1,$2,$3,$4,'boundary-fixture','billable',$5,$6,$7)",[device,randomUUID(),sourceId,new Date(time),input,cached,output]);
+  }
+  const boundary=await dashboard(pool,1,snapshot);
+  const exact=boundary.models.find(m=>m.model==='boundary-fixture');
+  assert.equal(exact.input_tokens,'8');assert.equal(exact.cached_input_tokens,'4');assert.equal(exact.output_tokens,'3');
+  const total=rows=>rows.reduce((sum,r)=>sum+BigInt(r.input_tokens??0)+BigInt(r.output_tokens??0),0n);
+  assert.equal(total(boundary.models),total(boundary.usage_days));
+  assert.equal(total(boundary.models),total(boundary.today_models));
+  assert.equal(total(boundary.models),total(boundary.session_usage));
   const enrollGitHub = async (user, existingId) => {
     const db = await pool.connect();
     try {

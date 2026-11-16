@@ -92,7 +92,16 @@ if ($Action -eq 'Submit') {
         if ($pulls.Count -gt 50) {throw 'At most 50 checked PR records per request.'}
     }
     $prBodyPath=Join-Path $WorkDir 'pr-request.json'
-    if ($pulls.Count -or (Test-Path -LiteralPath $prBodyPath)) {
+    [object[]]$statuses=@()
+    $statusFile=Join-Path $WorkDir 'statuses.json'
+    $statusBodyPath=Join-Path $WorkDir 'status-request.json'
+    if (Test-Path -LiteralPath $statusFile) {
+        $raw=Get-Content -LiteralPath $statusFile -Raw -Encoding UTF8
+        if (!$raw.TrimStart().StartsWith('[')) {throw 'statuses.json must be an array.'}
+        $statuses=ConvertFrom-Json -InputObject $raw
+        if ($statuses.Count -gt 50) {throw 'At most 50 status assessments per request.'}
+    }
+    if ($pulls.Count -or (Test-Path -LiteralPath $prBodyPath) -or $statuses.Count -or (Test-Path -LiteralPath $statusBodyPath)) {
         [void][IO.Directory]::CreateDirectory($StateDir)
         $pendingPath=Join-Path $StateDir ('.pulse-state-'+(Hash $Server.TrimEnd('/')).Substring(0,12)+'.json')
         $pending=if(Test-Path -LiteralPath $pendingPath){Get-Content -LiteralPath $pendingPath -Raw -Encoding UTF8 | ConvertFrom-Json}else{[pscustomobject]@{report_from=[DateTime]::UtcNow.AddDays(-7).ToString('yyyy-MM-ddTHH:mm:ssZ');next_index=0;pending_work=$null}}
@@ -148,6 +157,15 @@ if ($Action -eq 'Submit') {
         $receipts+=@{batch_id=$batch.batch_id;usage=$receipt.usage}
         $sent++
     }
+    $statusReceipt=$null
+    if ($statuses.Count -or (Test-Path -LiteralPath $statusBodyPath)) {
+        $directory=Request '/api/v1/report-directory'
+        if ('client_project_status' -notin $directory.capabilities) {throw 'Server upgrade required: client_project_status (migration 009).'}
+        if (!(Test-Path -LiteralPath $statusBodyPath)) {WriteJson $statusBodyPath @{schema_version=1;batch_id=[guid]::NewGuid().ToString();sent_at=[DateTime]::UtcNow.ToString('o');statuses=$statuses}}
+        $expected=Get-Content -LiteralPath $statusBodyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $statusReceipt=Request '/api/v1/report-statuses' $statusBodyPath
+        if ($statusReceipt.status -ne 'committed' -or $statusReceipt.batch_id -ne $expected.batch_id -or $statusReceipt.statuses -ne @($expected.statuses).Count) {throw 'Unexpected status receipt.'}
+    }
     $prReceipt=$null
     if ($pulls.Count -or (Test-Path -LiteralPath $prBodyPath)) {
         $directory=Request '/api/v1/report-directory'
@@ -157,7 +175,7 @@ if ($Action -eq 'Submit') {
         $prReceipt=Request '/api/v1/report-pulls' $prBodyPath
         if ($prReceipt.status -ne 'committed' -or $prReceipt.batch_id -ne $expected.batch_id -or $prReceipt.pulls -ne @($expected.pulls).Count) {throw 'Unexpected PR receipt.'}
     }
-    @{submitted_batches=$sent; server_cursor_already_advanced=$alreadyCommitted;receipts=$receipts;pr_receipt=$prReceipt;usage_verified=($alreadyCommitted -eq 0); bytes_read=$plan.bytes_read; backlog=$plan.backlog} | ConvertTo-Json -Depth 10 -Compress
+    @{submitted_batches=$sent; server_cursor_already_advanced=$alreadyCommitted;receipts=$receipts;pr_receipt=$prReceipt;status_receipt=$statusReceipt;usage_verified=($alreadyCommitted -eq 0); bytes_read=$plan.bytes_read; backlog=$plan.backlog} | ConvertTo-Json -Depth 10 -Compress
     return
 }
 
@@ -277,6 +295,10 @@ foreach ($file in $files) {
         $from = [long]$cursor.offset
         $resolvedRepo=ResolveProject $meta.payload $source
         if ($stream.Length -eq $from) {
+            if ($IncludeEvidence -and $cursor.session_exists -and !$cursor.project_status.state) {
+                $folder=if($meta.payload.cwd){Split-Path -Leaf ([string]$meta.payload.cwd)}else{''}
+                $evidence+=@{source_id=$source;repository=$resolvedRepo;workspace_name=$folder;outcomes=@();previous_summary=$cursor.latest_summary;previous_project_report=$cursor.project_report;previous_project_status=$cursor.project_status}
+            }
             if ($resolvedRepo -and $cursor.session_exists -and $cursor.project_key -ne $resolvedRepo) {
                 if ('project_mapping_backfill' -in $directory.capabilities) {
                     $batches+=@{schema_version=1;batch_id=[guid]::NewGuid().ToString();sent_at=[DateTime]::UtcNow.ToString('o');collector_version='3.0.0';
@@ -380,7 +402,7 @@ foreach ($file in $files) {
                 state=$state; last_activity_at=$session.last_activity_at; revision=$end}
             if ($notes.Count -or (($session.repository -or $session.workspace_name) -and !$cursor.project_report)) {
                 $evidence += @{source_id=$source; repository=$repo; workspace_name=$session.workspace_name;
-                    outcomes=$notes; previous_summary=$cursor.latest_summary; previous_project_report=$cursor.project_report}
+                    outcomes=$notes; previous_summary=$cursor.latest_summary; previous_project_report=$cursor.project_report;previous_project_status=$cursor.project_status}
             }
         }
         $batches += @{schema_version=1; batch_id=[guid]::NewGuid().ToString(); sent_at=[DateTime]::UtcNow.ToString('o');

@@ -15,7 +15,8 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f db/005_project_reports.sql \
   -f db/006_report_cursors.sql \
   -f db/007_github_identities.sql \
-  -f db/008_project_key_case.sql
+  -f db/008_project_key_case.sql \
+  -f db/009_project_lifecycle.sql
 ```
 
 已有库只执行尚未应用的迁移。通过部署环境提供DATABASE_URL，启动完整局域网看板：
@@ -26,7 +27,7 @@ PULSE_LAN_ENROLLMENT=1 PULSE_HOST=0.0.0.0 PORT=4185 npm start
 
 当前上报包指向 `http://192.168.16.70:4185`。更换服务地址时同时更新脚本默认值、提示词、README和已有任务，再重新分发；不能用客户端IP替换。
 
-服务端更新后按原进程管理方式重启，核对 `/api/v1/report-directory` 的协议与能力。协议3需要精确用量回执、项目映射补报和客户端PR提交。最近这些功能更新无需新增数据库迁移。首页能打开不等于上报能力已更新。
+服务端更新后按原进程管理方式重启，核对 `/api/v1/report-directory` 的协议与能力。3.1.0需要先应用009_project_lifecycle迁移，并支持client_project_status；另外保留精确用量回执、项目映射补报及客户端PR提交能力。首页能打开不等于上报能力已更新。
 
 ## 本机开发与管理
 

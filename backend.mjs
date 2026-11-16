@@ -323,8 +323,49 @@ export function dashboardCutoff(days, now = Date.now()) {
   return new Date((Math.floor((now + offset) / day) - days + 1) * day - offset);
 }
 
-export async function dashboard(pool, days) {
-  const cutoff = dashboardCutoff(days);
+export async function ingestStatuses(pool,token,raw,lan=null) {
+  if (!token && !lan) fail(401,'invalid_device');
+  let report;try {report=JSON.parse(raw)} catch {fail(400,'invalid_json')}
+  const reasons={on_track:['progress_observed'],blocked:['dependency_unavailable','repeated_failure'],completed:['goal_completed'],paused:['user_paused'],unknown:['insufficient_evidence']};
+  if (!report || Object.keys(report).sort().join(' ')!=='batch_id schema_version sent_at statuses' || report.schema_version!==1 ||
+      !uuid.test(report.batch_id) || !Array.isArray(report.statuses) || !report.statuses.length || report.statuses.length>50 ||
+      typeof report.sent_at!=='string' || !Number.isFinite(Date.parse(report.sent_at))) fail(422,'invalid_status_batch');
+  const seen=new Set();
+  for (const row of report.statuses) {
+    if (!row || Object.keys(row).sort().join(' ')!=='evidence observed_at reason_code source_session_id state' ||
+      !uuid.test(row.source_session_id) || seen.has(row.source_session_id) || !reasons[row.state]?.includes(row.reason_code) ||
+      typeof row.observed_at!=='string' || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(row.observed_at) ||
+      !Number.isFinite(Date.parse(row.observed_at)) || Date.parse(row.observed_at)>Date.now()+300000 || !safeNarrative(row.evidence,200)) fail(422,'invalid_project_status');
+    seen.add(row.source_session_id);
+  }
+  const db=await pool.connect();
+  try {
+    await db.query('BEGIN');
+    const auth=await db.query('SELECT device_id FROM devices WHERE credential_digest=$1 AND revoked_at IS NULL FOR UPDATE',[digest(lan?.credential??token)]);
+    if(!auth.rowCount) fail(401,'invalid_device');
+    const device=auth.rows[0].device_id;
+    const previous=await db.query('SELECT request_digest FROM ingest_batches WHERE device_id=$1 AND batch_id=$2',[device,report.batch_id]);
+    if(previous.rowCount) {
+      if(!digest(raw).equals(previous.rows[0].request_digest)) fail(409,'batch_conflict');
+    } else {
+      for(const row of report.statuses) {
+        const source=await db.query('SELECT 1 FROM sessions WHERE device_id=$1 AND session_id=$2',[device,row.source_session_id]);
+        if(!source.rowCount) fail(422,'status_session_missing');
+        await db.query(`UPDATE sessions SET project_state=$3,reason_code=$4,observed_at=$5,project_evidence=$6
+          WHERE device_id=$1 AND session_id=$2 AND (observed_at IS NULL OR observed_at<=$5)`,
+          [device,row.source_session_id,row.state,row.reason_code,row.observed_at,row.evidence]);
+      }
+      await db.query('INSERT INTO ingest_batches(device_id,batch_id,request_digest,schema_version,collector_version,sent_at) VALUES ($1,$2,$3,1,\'3.1.0\',$4)',
+        [device,report.batch_id,digest(raw),report.sent_at]);
+    }
+    await db.query('UPDATE devices SET last_seen_at=now() WHERE device_id=$1',[device]);
+    await db.query('COMMIT');return {batch_id:report.batch_id,status:'committed',statuses:report.statuses.length};
+  } catch(error) {await db.query('ROLLBACK');throw error} finally {db.release()}
+}
+
+export async function dashboard(pool, days, now = Date.now()) {
+  const cutoff = dashboardCutoff(days,now);
+  const end = new Date(now);
   const queries = [
     [`SELECT d.display_name, t.last_seen_at, t.tool_id, t.full_name, t.workspace_name, t.last_activity_at
       FROM developers d LEFT JOIN LATERAL (
@@ -338,11 +379,11 @@ export async function dashboard(pool, days) {
            ELSE coalesce(o.project_state,'unknown') END AS status,
       coalesce((SELECT json_agg(json_build_object('title',m.title,'state',m.state,'due_on',m.due_on) ORDER BY m.position) FROM project_milestones m WHERE m.repository_id=r.repository_id),'[]') AS milestones
       FROM repositories r LEFT JOIN LATERAL (
-        SELECT project_state,observed_at FROM sessions WHERE repository_id=r.repository_id AND observed_at IS NOT NULL AND project_state IN ('blocked','on_track') ORDER BY observed_at DESC,session_id LIMIT 1
+        SELECT project_state,observed_at FROM sessions WHERE repository_id=r.repository_id AND observed_at IS NOT NULL ORDER BY observed_at DESC,session_id LIMIT 1
       ) o ON true ORDER BY r.full_name`,[]],
     [`SELECT u.provider,u.model,sum(u.input_tokens) AS input_tokens,sum(u.cached_input_tokens) AS cached_input_tokens,
-      sum(u.output_tokens) AS output_tokens FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1
-      GROUP BY u.provider,u.model ORDER BY sum(coalesce(u.input_tokens,0)+coalesce(u.output_tokens,0)) DESC`,[cutoff]],
+      sum(u.output_tokens) AS output_tokens FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1 AND u.occurred_at <= $2
+      GROUP BY u.provider,u.model ORDER BY sum(coalesce(u.input_tokens,0)+coalesce(u.output_tokens,0)) DESC`,[cutoff,end]],
     [`SELECT s.session_id,s.title,coalesce(s.display_title, s.title) AS display_title,d.display_name,s.tool_id,r.full_name,s.workspace_name,s.last_activity_at,x.summary,x.summarizer_tool
       FROM sessions s JOIN devices v USING(device_id) JOIN developers d USING(developer_id) LEFT JOIN repositories r USING(repository_id)
       LEFT JOIN LATERAL (SELECT summary,summarizer_tool FROM session_summaries z WHERE z.device_id=s.device_id AND z.session_id=s.session_id
@@ -362,8 +403,8 @@ export async function dashboard(pool, days) {
       WHERE a.last_activity_at >= $1 ORDER BY a.last_activity_at DESC LIMIT 100`,[cutoff]],
     [`SELECT to_char(u.occurred_at AT TIME ZONE 'Asia/Singapore','YYYY-MM-DD') AS day,
       sum(u.input_tokens) AS input_tokens,sum(u.output_tokens) AS output_tokens
-      FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1
-      GROUP BY day ORDER BY day`,[cutoff]],
+      FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1 AND u.occurred_at <= $2
+      GROUP BY day ORDER BY day`,[cutoff,end]],
     [`SELECT DISTINCT ON (lower(p.project_key)) coalesce(r.full_name,p.project_key) AS project_key,
         p.goal,p.milestones,p.observed_at,p.summarizer_tool
       FROM project_reports p
@@ -373,28 +414,27 @@ export async function dashboard(pool, days) {
       sum(coalesce(u.input_tokens,0)) AS input_tokens,sum(coalesce(u.output_tokens,0)) AS output_tokens
       FROM usage_events u JOIN sessions s ON s.device_id=u.device_id AND s.session_id=u.session_id
       LEFT JOIN repositories r ON r.repository_id=s.repository_id
-      WHERE u.accounting='billable' AND u.occurred_at >= $1
-      GROUP BY coalesce(r.full_name,s.workspace_name) ORDER BY sum(coalesce(u.input_tokens,0)+coalesce(u.output_tokens,0)) DESC`,[cutoff]],
+      WHERE u.accounting='billable' AND u.occurred_at >= $1 AND u.occurred_at <= $2
+      GROUP BY coalesce(r.full_name,s.workspace_name) ORDER BY sum(coalesce(u.input_tokens,0)+coalesce(u.output_tokens,0)) DESC`,[cutoff,end]],
     [`SELECT u.session_id,sum(coalesce(u.input_tokens,0)) AS input_tokens,
       sum(coalesce(u.cached_input_tokens,0)) AS cached_input_tokens,
       sum(coalesce(u.output_tokens,0)) AS output_tokens
-      FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1
-      GROUP BY u.session_id`,[cutoff]],
+      FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1 AND u.occurred_at <= $2
+      GROUP BY u.session_id`,[cutoff,end]],
     [`SELECT d.display_name,r.full_name,s.workspace_name,count(DISTINCT s.session_id)::int AS session_count,
       max(s.last_activity_at) AS last_activity_at
       FROM sessions s JOIN devices v USING(device_id) JOIN developers d USING(developer_id)
       LEFT JOIN repositories r USING(repository_id)
-      WHERE s.last_activity_at >= $1
-      GROUP BY d.display_name,r.full_name,s.workspace_name ORDER BY d.display_name,last_activity_at DESC`,[cutoff]]
+      GROUP BY d.display_name,r.full_name,s.workspace_name ORDER BY d.display_name,last_activity_at DESC`,[]]
   ];
   queries.push([`SELECT DISTINCT ON (workspace_name) workspace_name,project_state AS status
     FROM sessions WHERE repository_id IS NULL AND workspace_name IS NOT NULL
-      AND observed_at IS NOT NULL AND project_state IN ('blocked','on_track')
+      AND observed_at IS NOT NULL
     ORDER BY workspace_name,observed_at DESC,session_id`,[]]);
   queries.push([`SELECT provider, model, sum(input_tokens) AS input_tokens,
     sum(cached_input_tokens) AS cached_input_tokens, sum(output_tokens) AS output_tokens
-    FROM usage_events WHERE accounting='billable' AND occurred_at >= $1 AND occurred_at <= now()
-    GROUP BY provider, model`, [dashboardCutoff(1)]]);
+    FROM usage_events WHERE accounting='billable' AND occurred_at >= $1 AND occurred_at <= $2
+    GROUP BY provider, model`, [dashboardCutoff(1,now),end]]);
   const [people,projects,models,sessions,agents,running,pulls,quota,agentDetails,usageDays,projectReports,projectUsage,sessionUsage,memberships,workspaceStates,todayModels] = await Promise.all(queries.map(args=>pool.query(...args)));
   return { people:people.rows,projects:projects.rows,models:models.rows,sessions:sessions.rows,agents:agents.rows,
     running:running.rows[0].count,pulls:pulls.rows,quota:quota.rows,agent_details:agentDetails.rows,usage_days:usageDays.rows,
@@ -406,6 +446,7 @@ async function reportCursor(pool, token, sourceId, lan = null) {
   if (!uuid.test(sourceId ?? '')) fail(422,'invalid_source_id');
   const result = await pool.query(`SELECT c.byte_offset,c.context,project.report,summary.summary AS latest_summary,agent.state AS agent_state,
     coalesce(r.full_name,s.workspace_name) AS project_key,s.session_id IS NOT NULL AS session_exists,
+    jsonb_build_object('state',s.project_state,'reason_code',s.reason_code,'observed_at',s.observed_at,'evidence',s.project_evidence) AS project_status,
     ARRAY(SELECT full_name FROM repositories WHERE lower(github_host)='github.com' ORDER BY full_name) AS repositories
     FROM (SELECT 1) seed
     LEFT JOIN devices d ON d.credential_digest=$1
@@ -426,8 +467,8 @@ async function reportCursor(pool, token, sourceId, lan = null) {
     WHERE d.revoked_at IS NULL AND (d.device_id IS NOT NULL OR $3::boolean)`,
     [digest(lan?.credential ?? token),sourceId,Boolean(lan)]);
   if (!result.rowCount) fail(401,'invalid_device');
-  const {byte_offset,context,repositories,report,latest_summary,agent_state,project_key,session_exists} = result.rows[0];
-  return {source_id:sourceId,offset:Number(byte_offset ?? 0),context,repositories,project_report:report,latest_summary,agent_state,project_key,session_exists};
+  const {byte_offset,context,repositories,report,latest_summary,agent_state,project_key,session_exists,project_status} = result.rows[0];
+  return {source_id:sourceId,offset:Number(byte_offset ?? 0),context,repositories,project_report:report,latest_summary,agent_state,project_key,session_exists,project_status};
 }
 
 async function reportDirectory(pool, lan) {
@@ -449,8 +490,8 @@ async function reportDirectory(pool, lan) {
       ORDER BY c.source_id`,[digest(lan.credential)])
   ]);
   if (current.rows[0]?.revoked_at) fail(401,'invalid_device');
-  return {protocol_version:3, recommended_collector_version:'3.0.0',
-    capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill','client_pr_ingest'],sources:sources.rows,
+  return {protocol_version:3, recommended_collector_version:'3.1.0',
+    capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill','client_pr_ingest','client_project_status'],sources:sources.rows,
     members:members.rows,repositories:repositories.rows,
     current_display_name:current.rows[0]?.display_name ?? null};
 }
@@ -467,7 +508,7 @@ export function createApi({localView = false, lanEnrollment = false} = {}) {
       try {
         const deviceKey = req.headers['x-pulse-lan-device'];
         const lan = lanEnrollment && !req.headers.authorization && deviceKey !== undefined ? lanIdentity(deviceKey,req.headers['x-pulse-lan-label'],req.headers['x-pulse-lan-github']) : null;
-        if (req.method==='POST' && ['/api/v1/reports','/api/v1/report-pulls'].includes(url.pathname)) {
+        if (req.method==='POST' && ['/api/v1/reports','/api/v1/report-pulls','/api/v1/report-statuses'].includes(url.pathname)) {
           if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) fail(415,'invalid_content_type');
           const chunks = [];
           let length = 0;
@@ -476,7 +517,7 @@ export function createApi({localView = false, lanEnrollment = false} = {}) {
             if (length > 256 * 1024) { res.writeHead(413).end(); return; }
             chunks.push(chunk);
           }
-          data = await (url.pathname==='/api/v1/report-pulls' ? ingestPulls : ingest)(pool,token,Buffer.concat(chunks),lan);
+          data = await (url.pathname==='/api/v1/report-pulls' ? ingestPulls : url.pathname==='/api/v1/report-statuses' ? ingestStatuses : ingest)(pool,token,Buffer.concat(chunks),lan);
         } else if (req.method==='GET' && url.pathname==='/api/v1/report-directory' && lanEnrollment) {
           if (!lan) fail(401,'invalid_lan_device');
           data = await reportDirectory(pool,lan);

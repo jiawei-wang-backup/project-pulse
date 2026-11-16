@@ -1,6 +1,6 @@
 # Project Pulse macOS / Windows / Linux 快速上报包
 
-版本以 `VERSION` 为准（当前 3.0.0），需要服务端协议 3。先阅读 `UPGRADE.md`，升级时保留本目录的隐藏状态文件和待续传目录。包内 `SHA256SUMS` 可用于核对文件完整性。
+版本以 `VERSION` 为准（当前 3.1.0），需要服务端协议3、client_project_status能力，以及已应用009_project_lifecycle迁移。先阅读 `UPGRADE.md`，升级时保留隐藏状态和待续传目录。包内SHA256SUMS可核对完整性。
 
 这是客户端上报包。解压后不要移动包内文件，在 Codex 打开解压后的 `project-pulse-report` 目录，把 `PROMPT.txt` 全文发给 Codex。不要直接在 ZIP 预览里执行。
 
@@ -16,6 +16,8 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，执�
 我授权你识别本机 Codex 主会话及相关项目、成员、GitHub仓库和PR、模型与真实Token用量，并生成脱敏摘要、项目目标和里程碑。先主动查找并复用已有信息，仍缺信息或证据冲突时，再集中询问我。排除当前上报会话，不编造数据。
 
 使用包内对应系统的固定脚本，向 http://192.168.16.70:4185 增量上报。PR也要按README查证并结构化提交，分别核对日志、Token和PR回执。
+
+项目状态由会话证据判断，在研包含尚未完成的阻塞项目；不按时间超时，与Agent执行状态分开。状态变化或首次补齐时按README提交statuses.json并核对status_receipt，不把一轮任务结束当作整个项目完成。
 
 试报成功后，必须使用定时任务工具，创建或更新并启用「Project Pulse 每30分钟上报」，每30分钟在当前永久解压目录执行完整识别与增量同步。已有同用途任务就更新，避免重复；设置后重新查询确认启用状态、间隔和目录。无需再次询问是否设置。
 
@@ -135,11 +137,33 @@ Submit先提交日志与用量，再将PR请求保存为不可变 `pr-request.js
 
 真正服务端需提供 `client_pr_ingest` 能力（更新代码并重启，无新迁移）；缺失时明确报告PR尚未同步，不能降级为“摘要里写了链接就算已上传”。回报日志回执与PR回执两项，再辅助检查Dashboard.pulls。只有PR已识别但未提交时不得声称全部同步完成。
 
-## 定时任务设置细则
+## 客户端项目状态判断
+
+顶部“在研项目”统计on_track与blocked，与“运行中的Agent”独立。客户端Codex根据会话、目标、里程碑、上次状态以及明确的人类决定判断，不按最后活动时间推断。下班、开会、没有新日志或Token不构成阻塞、暂停或完成依据；Agent任务结束也不等于项目完成。
+
+| state | reason_code | 判断依据 |
+| --- | --- | --- |
+| on_track | progress_observed | 已开始且仍有明确未完成目标，未明确暂停 |
+| blocked | dependency_unavailable / repeated_failure | 尚有无法解决的依赖或反复失败，需干预；仍计入在研 |
+| completed | goal_completed | 整体项目目标已实现并有验证依据，不是仅一轮任务结束 |
+| paused | user_paused | 有明确的项目暂停决定 |
+| unknown | insufficient_evidence | 首次证据不足；已有有效状态时优先沿用，不因无变化重置 |
+
+状态变化或首次补齐时，在本轮同一待续传目录保存UTF-8的statuses.json。每项目每轮最多提交一份，用本设备已上报且属于该项目的主会话UUID。依据为脱敏短句，不复制日志原文：
+
+```json
+[{"source_session_id":"替换成真实会话UUID","state":"blocked","reason_code":"dependency_unavailable","observed_at":"替换成当前UTC判断时间","evidence":"外部接口缺少必要权限，已尝试现有授权方式仍无法继续"}]
+```
+
+observed_at为本次有证据的判断时间，状态无变化时不反复提交以覆盖其他成员的判断。查阅Prepare.evidence.previous_project_status及上版摘要／报告，必要时读对应来源游标。即使无新日志也可Submit独立状态；脚本先提交日志，再提交statuses，随后提交PR，分别核对回执。成功status_receipt包含batch_id、committed和statuses条数；失败保留原请求续传。服务端只接受本设备已有会话，较旧判断不覆盖新判断，不改变Token游标、Agent状态或其最后活动时间。
+
+服务器须应用009迁移并提供client_project_status能力；旧服务端明确报升级要求。无状态不能猜在研：先询问项目目标或暂停／完成依据。
+
+## 定时任务执行规则
 
 - `PROMPT.txt` 明确要求并授权“立即上报”和“设置每30分钟定时任务”两个必做交付。试报成功后必须继续调用 Codex 桌面端定时任务工具（`automation_update`），不得再次询问是否设置，也不得在一次上传完成后结束。不能以有积压、无新增用量或沿用摘要为由跳过。定时运行本身只执行一轮上报，不重复创建任务。
 - 先查找本机同目录、同上报用途的已有任务，更新并启用；没有才创建。任务名为「Project Pulse 每30分钟上报」，每 30 分钟执行一次，工作目录必须是解压后的永久目录，不得使用临时目录或 ZIP 路径。
-- 定时任务正文（创建时将“本包永久目录”替换为实际绝对目录）：`PROJECT_PULSE_AUTOMATION。读取本包永久目录的VERSION和README.md，服务端为http://192.168.16.70:4185。由当前客户端Codex主动识别成员、项目、迁移目录、主会话、GitHub仓库与PR、模型、三类Token、摘要、目标及里程碑。先恢复待发请求，复用已有证据与映射；使用固定脚本解析Token差分并提交，不能估算或重复累计。用已授权GitHub工具检查open／closed／merged／draft，将查证结果按README写入pulls.json并用Submit提交，即使无新增日志也要检查PR。核对日志committed、usage_verified、PR的pr_receipt及diagnostics，报告实际提交、覆盖范围、积压和无法计量项。先自行查找与判断，仅在仍缺少信息或证据冲突时在任务结果集中反问用户；不要阻塞其他可确认数据上报。排除当前上报会话，不启动服务端，不重复创建任务。`
+- 定时任务正文（创建时将“本包永久目录”替换为实际绝对目录）：`PROJECT_PULSE_AUTOMATION。读取本包永久目录的VERSION和README.md，服务端为http://192.168.16.70:4185。由当前客户端Codex主动识别成员、项目、迁移目录、主会话、GitHub仓库与PR、模型、三类Token、摘要、目标及里程碑。先恢复待发请求，复用已有证据与映射；使用固定脚本解析Token差分并提交，不能估算或重复累计。用已授权GitHub工具检查open／closed／merged／draft，将查证结果按README写入pulls.json并用Submit提交，即使无新增日志也要检查PR。核对日志committed、usage_verified、PR的pr_receipt及diagnostics，报告实际提交、覆盖范围、积压和无法计量项。先自行查找与判断，仅在仍缺少信息或证据冲突时在任务结果集中反问用户；不要阻塞其他可确认数据上报。项目状态由会话证据判断，on_track与blocked均为在研；不按时间超时，不把Agent任务结束当作项目完成。状态变化或首次补齐时写statuses.json并核对status_receipt，无证据则沿用上次状态。排除当前上报会话，不启动服务端，不重复创建任务。`
 - 创建或更新后必须重新查询任务，确认名称、已启用、30 分钟间隔和工作目录。未实际查到任务时不得声称「已设置」。当前工具无定时任务能力时，必须明确回报「未设置」及原因。
 - Linux也遵守相同规则：只有当前执行工具实际提供定时任务能力才可设置；只有CLI而没有该能力时，完成可执行的上报并明确报告“定时任务未设置”，不擅自安装服务或写入cron。
 - 只有试报成功且重新查询确认定时任务已启用，才可报告整体完成。最终给出任务标识、实际计划规则及下次运行时间（工具未提供则如实说明）。试报失败或定时任务工具缺失／报错时报告“整体未完成”，列出失败步骤和具体错误。

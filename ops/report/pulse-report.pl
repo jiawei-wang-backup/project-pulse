@@ -127,8 +127,10 @@ if ($action eq 'Submit') {
     $label //= $plan->{label};
     $github_login //= $plan->{github_login};
     my $pulls=-f "$work/pulls.json" ? read_json("$work/pulls.json") : [];
+    my $statuses=-f "$work/statuses.json" ? read_json("$work/statuses.json") : [];
+    die "statuses.json must be an array of at most 50 assessments\n" unless ref($statuses) eq 'ARRAY' && @$statuses<=50;
     die "pulls.json must be an array of at most 50 checked PR records\n" unless ref($pulls) eq 'ARRAY' && @$pulls<=50;
-    if (@$pulls || -f "$work/pr-request.json") {
+    if (@$pulls || -f "$work/pr-request.json" || @$statuses || -f "$work/status-request.json") {
         my $pending_file="$state_dir/.pulse-state-".substr(sha256_hex($server),0,12).'.json';
         my $state=-f $pending_file ? read_json($pending_file) : {report_from=>now(time()-7*86400),next_index=>0};
         die "Finish the previous pending report first\n" if $state->{pending_work} && $state->{pending_work} ne $work && -f "$state->{pending_work}/plan.json";
@@ -177,6 +179,17 @@ if ($action eq 'Submit') {
         push @receipts,{batch_id=>$batch->{batch_id},usage=>$receipt->{usage}};
         $sent++;
     }
+    my $status_receipt;
+    if (@$statuses || -f "$work/status-request.json") {
+        my $directory=request('/api/v1/report-directory');
+        die "Server upgrade required: client_project_status (migration 009)\n" unless grep {$_ eq 'client_project_status'} @{$directory->{capabilities}//[]};
+        my $body="$work/status-request.json";
+        write_json($body,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),statuses=>$statuses}) unless -f $body;
+        my $expected=read_json($body);
+        $status_receipt=request('/api/v1/report-statuses',$body);
+        die "Unexpected status receipt\n" unless $status_receipt->{status} eq 'committed' &&
+            $status_receipt->{batch_id} eq $expected->{batch_id} && $status_receipt->{statuses}==@{$expected->{statuses}};
+    }
     my $pr_receipt;
     if (@$pulls || -f "$work/pr-request.json") {
         my $directory=request('/api/v1/report-directory');
@@ -188,7 +201,7 @@ if ($action eq 'Submit') {
         die "Unexpected PR receipt\n" unless $pr_receipt->{status} eq 'committed' &&
             $pr_receipt->{batch_id} eq $expected->{batch_id} && $pr_receipt->{pulls}==@{$expected->{pulls}};
     }
-    print $json->encode({submitted_batches=>$sent,server_cursor_already_advanced=>$advanced,pr_receipt=>$pr_receipt,
+    print $json->encode({submitted_batches=>$sent,server_cursor_already_advanced=>$advanced,pr_receipt=>$pr_receipt,status_receipt=>$status_receipt,
         receipts=>\@receipts,usage_verified=>($advanced ? JSON::PP::false : JSON::PP::true),
         bytes_read=>$plan->{bytes_read},backlog=>$plan->{backlog}}),"\n";
     exit;
@@ -328,6 +341,11 @@ for my $entry (@files) {
     my $from = $cursor->{offset};
     my $resolved_repo=resolve_project($p,$source);
     if ($size == $from) {
+        if ($include && $cursor->{session_exists} && !$cursor->{project_status}{state}) {
+            my ($folder)=($p->{cwd}//'') =~ m{([^/\\:]+)[/\\]*\z};
+            push @evidence,{source_id=>$source,repository=>$resolved_repo,workspace_name=>$folder,outcomes=>[],
+                previous_summary=>$cursor->{latest_summary},previous_project_report=>$cursor->{project_report},previous_project_status=>$cursor->{project_status}};
+        }
         if ($resolved_repo && $cursor->{session_exists} && ($cursor->{project_key}//'') ne $resolved_repo) {
             if (grep {$_ eq 'project_mapping_backfill'} @{$directory->{capabilities}//[]}) {
                 push @batches,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),collector_version=>'3.0.0',
@@ -422,7 +440,7 @@ for my $entry (@files) {
             state=>$state // $cursor->{agent_state} // 'unknown',last_activity_at=>$activity,revision=>$end};
         if (@notes || (($repo || $folder) && !$cursor->{project_report})) {
             push @evidence,{source_id=>$source,repository=>$repo,workspace_name=>$folder,outcomes=>\@notes,
-                previous_summary=>$cursor->{latest_summary},previous_project_report=>$cursor->{project_report}};
+                previous_summary=>$cursor->{latest_summary},previous_project_report=>$cursor->{project_report},previous_project_status=>$cursor->{project_status}};
         }
     }
     my $batch_id = uuid4();

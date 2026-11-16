@@ -25,6 +25,8 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，执�
 
 使用包内对应系统的固定脚本，向 http://192.168.16.70:4185 增量上报。PR也要按README查证并结构化提交，分别核对日志、Token和PR回执。
 
+项目状态由会话证据判断，在研包含尚未完成的阻塞项目；不按时间超时，与Agent执行状态分开。状态变化或首次补齐时按README提交statuses.json并核对status_receipt，不把一轮任务结束当作整个项目完成。
+
 试报成功后，必须使用定时任务工具，创建或更新并启用「Project Pulse 每30分钟上报」，每30分钟在当前永久解压目录执行完整识别与增量同步。已有同用途任务就更新，避免重复；设置后重新查询确认启用状态、间隔和目录。无需再次询问是否设置。
 
 最后报告实际识别及提交结果、Token与PR核验结果、积压和缺失信息，以及任务标识、启用状态和计划规则。无法上报或无法设置任务时明确说明失败步骤和原因，不得宣称全部完成。
@@ -42,6 +44,7 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，执�
 | 模型与 Token | 从日志解析模型、输入、缓存输入、输出 Token，按游标计算差分，不估算或重复累计 |
 | GitHub PR | 查证仓库数字 ID、PR 编号、状态和时间，结构化提交并核对独立回执 |
 | 目标与里程碑 | 依据证据总结目标、已完成及未完成交付项，不编造进度 |
+| 项目状态 | 根据会话判断在研、阻塞、完成或明确暂停，独立上报状态与依据，不按时间超时 |
 | 30 分钟任务 | 试报成功后必须设置，再查询确认启用状态、间隔和工作目录 |
 
 日志提交核对 `committed`、`usage_verified`，PR 提交核对 `pr_receipt`。无新增、缺少记录、权限不足、解析失败和仍有积压必须分别说明；面板没有 PR 不等于 GitHub 没有 PR。只有查到任务存在才能说“已设置”，实际自动触发成功后才能说“自动运行已验证”。
@@ -60,7 +63,7 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，执�
 
 下载新 ZIP，覆盖原永久解压目录，保留 `.pulse-state-*.json`、`.pulse-project-paths.json`、`.pulse-pending/`，再发送上面的提示词。更新原任务的正文并重新核验，不重复创建。待发请求先恢复，不清空游标或重新导入历史 Token。
 
-当前包使用协议 3。真正服务端需提供 `usage_receipt`、`project_mapping_backfill`、`client_pr_ingest` 能力，旧部署应先拉取最新代码并按原方式重启。更新 ZIP 不会自动更新另一台电脑的服务端或已存在的定时任务。
+当前包3.1.0使用协议3。真正服务端需先执行009_project_lifecycle迁移并重启，提供 `usage_receipt`、`project_mapping_backfill`、`client_pr_ingest`、`client_project_status` 能力。更新ZIP不会自动更新另一台电脑的服务端或已存在的定时任务。
 
 ## 服务端与开发
 

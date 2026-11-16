@@ -160,7 +160,7 @@ function renderOverviewMetrics() {
   const metrics = overviewMetrics(state.period);
   const docs = documentDigest(null, state.period);
   return `<div class="metric-grid portfolio-metrics" aria-label="工作空间摘要">
-    ${metric('进行中项目', metrics.active, `/ ${projects.length}`, '', 'folder')}
+    ${metric('在研项目', metrics.active, `/ ${projects.length}`, '', 'folder')}
     ${metric('运行中的 Agent', metrics.running, '个', ``, 'bot')}
     ${metric('成果文档', docs.total, '份', '', 'document')}
     ${metric(`${periodLabels[state.period]}估算费用`, money(metrics.costMicros), '', `${tokens(metrics.inputTokens + metrics.outputTokens)} Token`, 'dollar', 'metric-with-spark lime', sparkline(trendFor(null, state.period)))}

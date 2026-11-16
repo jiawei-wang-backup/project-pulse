@@ -1,10 +1,11 @@
 import { icon } from './icons.js';
+import {researchProjectCount,memberProjectKeys,renderProjectDocuments} from './live-projects.js';
 
 const app = document.querySelector('#app');
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
 const date = value => value ? new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Singapore',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
-const status = {on_track:'正常推进',blocked:'已阻塞',completed:'已完成'};
-const tone = {on_track:'green',blocked:'red',unknown:'muted',completed:'green'};
+const status = {on_track:'在研',blocked:'已阻塞',completed:'已完成',paused:'已暂停'};
+const tone = {on_track:'green',blocked:'red',unknown:'muted',completed:'green',paused:'muted'};
 const periods = {1:'今天',7:'近 7 天',30:'近 30 天'};
 let days = Number(sessionStorage.getItem('pulse-days')) || 7;
 if (!periods[days]) days = 7;
@@ -66,6 +67,7 @@ function allocationProjectKey(key) {
 }
 function allProjects() {
   const map = new Map(data.projects.map(item=>[item.full_name,{...item}]));
+  for(const row of data.memberships||[]) if(projectKey(row) && !map.has(projectKey(row))) map.set(projectKey(row),{full_name:projectKey(row),business_category:'本地工作区',status:'unknown',local:true});
   for (const row of data.sessions) if (projectKey(row) && !map.has(projectKey(row))) map.set(projectKey(row),{full_name:projectKey(row),business_category:'本地工作区',status:'unknown',local:true});
   for (const row of data.project_reports||[]) {
     const key = workspaceRepository(row.project_key) || row.project_key;
@@ -107,7 +109,7 @@ function side() {
     <nav class="project-nav">${allProjects().map(item=>`<a class="${selected(item.full_name)?'is-active':''}" href="#/projects/${encodeURIComponent(item.full_name)}">${icon('folder')}<span class="live-nav-name">${esc(projectName(item.full_name))}</span></a>`).join('')}</nav>
     <div class="sidebar-spacer"></div>${sidebarUsage(data.models || [])}<div class="workspace-user"><span class="avatar">P</span><div><strong>真实数据</strong><small>ASIA/SINGAPORE</small></div><span class="local-dot"></span></div></aside>`;
 }
-function topbar(title) { return `<div class="topbar"><div class="breadcrumbs"><button class="icon-button live-menu" id="menu" aria-label="打开导航">${icon('menu')}</button><a href="#/overview">工作空间</a>${icon('chevron')}<span class="current">${esc(title)}</span></div><div class="topbar-right"><span class="snapshot-badge">${icon('clock')}新加坡时间</span><button class="button-secondary" id="refresh">刷新</button></div></div>`; }
+function topbar(title) { return `<div class="topbar"><div class="breadcrumbs"><button class="icon-button live-menu" id="menu" aria-label="打开导航">${icon('menu')}</button><a href="#/overview">工作空间</a>${icon('chevron')}<span class="current">${esc(title)}</span></div><div class="topbar-right"><button class="button-secondary" id="refresh">刷新</button></div></div>`; }
 function heading(title, period=true) { return `<div class="page-heading"><div><h1>${esc(title)}</h1></div>${period?`<div class="period-control" role="group" aria-label="统计时间">${icon('calendar')}${[1,7,30].map(value=>`<button class="period-button ${days===value?'is-active':''}" data-days="${value}" aria-pressed="${days===value}">${periods[value]}</button>`).join('')}</div>`:''}</div>`; }
 function metric(label, value, mark='grid', lime=false, {unit='', foot=''}={}) {
   return `<div class="metric">
@@ -141,12 +143,7 @@ function sessionGroups(items) {
 }
 function pulls(items) {
   if (!items.length) return empty('暂无 PR');
-  const groups=new Map();
-  for (const row of items) { if (!groups.has(row.full_name)) groups.set(row.full_name,[]);groups.get(row.full_name).push(row); }
-  return [...groups].map(([name,rows])=>`<div class="live-doc-group"><div class="live-doc-heading"><strong>${esc(projectName(name))}</strong><span>${rows.length} 份 · ${rows.filter(row=>row.is_draft).length} 份草稿</span></div>${rows.map(row=>{
-    const link=safeGithub(row.url), label=`#${row.number} ${row.title}`;
-    return `<div class="live-doc-row"><span class="live-doc-icon">${icon('document')}</span><div><strong>${link?`<a href="${esc(link)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`:esc(label)}</strong><span>${esc(row.state==='open'?'开放中':row.state==='closed'?'已关闭':row.state||'—')}</span></div>${row.is_draft?'<span class="status-badge tone-amber">草稿</span>':''}<time>${date(row.updated_at)}</time></div>`;
-  }).join('')}</div>`).join('');
+  return renderProjectDocuments(items,{esc,icon,date,projectName,safeGithub});
 }
 function modelRows() {
   if (!data.models.length) return empty('暂无模型消耗');
@@ -190,10 +187,7 @@ function peopleRows(items=data.people) {
   </div>`;
 }
 function memberProjects(name,key='') {
-  const sessions=data.sessions.filter(item=>item.display_name===name);
-  const names=[...new Set(sessions.map(projectKey).filter(Boolean))];
-  if (!names.length) names.push(...new Set((data.memberships||[]).filter(item=>item.display_name===name).map(row=>row.full_name||row.workspace_name).filter(Boolean)));
-  return key ? names.filter(project=>project===key || projectName(project)===projectName(key)) : names;
+  return memberProjectKeys(data,name,projectKey,key);
 }
 function teamCards(key='') {
   const members=data.people.filter(person=>!key || memberProjects(person.display_name,key).length ||
@@ -301,10 +295,10 @@ function sidebarUsage(rows) {
 
 function overview() {
   const projects = allProjects();
-  const activeProjects = projects.filter(project => project.status === 'on_track').length;
+  const activeProjects = researchProjectCount(projects);
   const attention = projects.filter(project => project.status === 'blocked');
   return `${heading('总览')}<div class="metric-grid live-overview-metrics">
-    ${metric('进行中项目', activeProjects, 'folder', false, {unit:`/ ${projects.length}`})}
+    ${metric('在研项目', activeProjects, 'folder', false, {unit:`/ ${projects.length}`})}
     ${metric('运行中的 Agent', data.running, 'bot', false, {unit:'个'})}
     ${metric('成果文档', data.pulls.length, 'document', false, {unit:'份'})}
     ${metric(`${periods[days]} Token 用量`, count((data.models || []).reduce((sum, row) => sum + usageTotal(row), 0n)), 'token', true)}

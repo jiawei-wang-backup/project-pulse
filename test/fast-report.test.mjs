@@ -23,11 +23,22 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
   const cursors=new Map(); let committed=0; let rejectNext=false; let corruptReceipt=false;
   const totals={input_tokens:0,cached_input_tokens:0,output_tokens:0};
   const prBatches=new Map();
+  const statusBatches=new Map();
   const server=http.createServer(async(req,res)=>{
     const url=new URL(req.url,'http://local');
     let result;
-    if(url.pathname==='/api/v1/report-directory') result={protocol_version:3,capabilities:['project_mapping_backfill','client_pr_ingest'],members:[],repositories:[],sources:[...cursors].map(([source_id,c])=>({source_id,offset:c.offset}))};
+    if(url.pathname==='/api/v1/report-directory') result={protocol_version:3,capabilities:['project_mapping_backfill','client_pr_ingest','client_project_status'],members:[],repositories:[],sources:[...cursors].map(([source_id,c])=>({source_id,offset:c.offset}))};
     else if(url.pathname==='/api/v1/report-cursor') result=cursors.get(url.searchParams.get('source_id')) ?? {offset:0,context:{},repositories:[]};
+    else if(req.method==='POST' && url.pathname==='/api/v1/report-statuses') {
+      const chunks=[];for await(const chunk of req) chunks.push(chunk);
+      const body=JSON.parse(Buffer.concat(chunks));
+      if(rejectNext){rejectNext=false;res.writeHead(503).end();return;}
+      assert.ok(Array.isArray(body.statuses));
+      for(const row of body.statuses) assert.ok(cursors.has(row.source_session_id));
+      if(statusBatches.has(body.batch_id)) assert.deepEqual(statusBatches.get(body.batch_id),body);
+      statusBatches.set(body.batch_id,body);
+      result={status:'committed',batch_id:body.batch_id,statuses:body.statuses.length};
+    }
     else if(req.method==='POST' && url.pathname==='/api/v1/report-pulls') {
       const chunks=[];for await(const chunk of req) chunks.push(chunk);
       const body=JSON.parse(Buffer.concat(chunks));
@@ -188,6 +199,15 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
     const conflict=await invoke('Prepare',join(root,'mapping-conflict'),windows?['-ResolveGit']:['--resolve-git']);
     assert.ok(conflict.diagnostics.project_unresolved.some(x=>x.source_id===source && x.reason==='conflicting_repository_evidence'));
     assert.equal(cursors.get(source).project_key,'example/moved');
+    const statusWork=join(root,'status-work');await invoke('Prepare',statusWork);
+    await writeFile(join(statusWork,'statuses.json'),JSON.stringify([{source_session_id:source,state:'blocked',reason_code:'dependency_unavailable',observed_at:at,evidence:'等待尚未解决的外部依赖'}]));
+    const beforeStatus={...totals},offsetBeforeStatus=cursors.get(source).offset;
+    rejectNext=true;await assert.rejects(invoke('Submit',statusWork));
+    await invoke('Prepare',join(root,'status-recovery'));
+    assert.equal((await invoke('Submit',statusWork)).status_receipt.statuses,1);
+    assert.equal(statusBatches.size,1);
+    assert.deepEqual(totals,beforeStatus);
+    assert.equal(cursors.get(source).offset,offsetBeforeStatus);
   } finally {
     await new Promise(resolve=>server.close(resolve));
     await rm(root,{recursive:true,force:true});

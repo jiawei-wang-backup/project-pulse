@@ -38,6 +38,7 @@ psql_local < db/005_project_reports.sql >/dev/null
 psql_local < db/006_report_cursors.sql >/dev/null
 psql_local < db/007_github_identities.sql >/dev/null
 psql_local < db/008_project_key_case.sql >/dev/null
+psql_local < db/009_project_lifecycle.sql >/dev/null
 case "${1:-serve}" in
   serve) PULSE_LOCAL_VIEW=1 PULSE_HOST=127.0.0.1 exec node server.mjs ;;
   serve-lan)

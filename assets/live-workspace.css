@@ -134,6 +134,7 @@
 .live-session-group .live-list{border-top:1px solid var(--border);background:#ffffff02}
 .live-session-group .live-session{padding-left:47px}
 .live-doc-group+.live-doc-group{border-top:1px solid var(--border)}
+.live-doc-group>.live-doc-rows{border-top:1px solid var(--border);background:#ffffff02}
 .live-doc-heading{display:flex;align-items:center;gap:12px;justify-content:space-between;padding:11px 19px;background:#ffffff03}
 .live-doc-heading strong{font-size:11px;overflow-wrap:anywhere}
 .live-doc-heading span{color:var(--lime);font-size:10px;white-space:nowrap}
