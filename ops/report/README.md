@@ -6,7 +6,7 @@
 
 ## 下载与首次发送提示词
 
-**[下载最新上报ZIP](https://github.com/jiawei-wang-dev/project-pulse/releases/latest/download/project-pulse-report-latest.zip)** · [固定3.1.1版本](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.1.1-20261116-r2/project-pulse-report-3.1.1.zip) · [查看发布记录](https://github.com/jiawei-wang-dev/project-pulse/releases)
+**[下载最新上报ZIP](https://github.com/jiawei-wang-dev/project-pulse/releases/latest/download/project-pulse-report-latest.zip)**
 
 本版3.1.1包含宽松Agent识别：运行窗口2小时，补足消息／输出／工具／用量活动信号，明确结束仍退出。覆盖更新原永久目录后，重新发送下面提示词以更新原30分钟任务，不能只下载新包而继续运行旧目录。
 

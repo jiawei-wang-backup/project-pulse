@@ -10,7 +10,7 @@ if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
     exit 2
 fi
 for readme in "$repo/README.md" "$here/README.md"; do
-    if ! grep -Fq "project-pulse-report-$version.zip" "$readme"; then
+    if ! grep -Fq 'https://github.com/jiawei-wang-dev/project-pulse/releases/latest/download/project-pulse-report-latest.zip' "$readme"; then
         printf 'Update the README download link before packaging version %s: %s\n' "$version" "$readme" >&2
         exit 2
     fi
