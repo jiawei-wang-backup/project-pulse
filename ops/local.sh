@@ -6,8 +6,8 @@ mkdir -p .pulse
 container=project-pulse-local-db
 
 if [[ ! -f .pulse/local.env ]]; then
-  printf 'POSTGRES_PASSWORD=%s\nPULSE_VIEW_TOKEN=%s\nPULSE_HOST=127.0.0.1\nPORT=4185\n' \
-    "$(openssl rand -hex 24)" "$(openssl rand -hex 32)" > .pulse/local.env
+  printf 'POSTGRES_PASSWORD=%s\nPULSE_HOST=127.0.0.1\nPORT=4185\n' \
+    "$(openssl rand -hex 24)" > .pulse/local.env
 fi
 set -a
 source .pulse/local.env

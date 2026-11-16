@@ -16,7 +16,6 @@ const run=promisify(execFile);
 const temp=await mkdtemp(join(tmpdir(),'pulse-smoke-'));
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const token=randomUUID(), developer=randomUUID(), device=randomUUID();
-process.env.PULSE_VIEW_TOKEN=randomUUID();
 const server=createPreviewServer(createApi()).listen(0,'127.0.0.1');
 await once(server,'listening');
 const base='http://127.0.0.1:'+server.address().port;
@@ -26,7 +25,6 @@ const claude=join(temp,'claude');
 const env={...process.env,PULSE_STATE_DIR:join(temp,'state'),PULSE_CODEX_DIR:root,PULSE_CLAUDE_DIR:claude,
   PULSE_SUMMARIZER_TOOL:'claude_code',PULSE_CODEX_ACCOUNT_ID:randomUUID(),PULSE_SERVER_URL:base,PULSE_DEVICE_TOKEN:token,PULSE_REPOSITORIES:'example/pulse'};
 delete env.DATABASE_URL;
-delete env.PULSE_VIEW_TOKEN;
 const cli=async (command,input)=>{
   const child=run(process.execPath,['client/pulse.mjs',command],{env});
   child.child.stdin.end(input ? JSON.stringify(input) : undefined);
@@ -66,8 +64,9 @@ try {
   for(let i=0;i<5 && pending;i++) pending=(await cli('flush')).pending_batches;
   assert.equal(pending,0);
   assert.equal((await cli('prepare')).evidence.length,0);
-  assert.equal((await fetch(base+'/api/v1/dashboard')).status,401);
-  const data=await (await fetch(base+'/api/v1/dashboard',{headers:{Authorization:'Bearer '+process.env.PULSE_VIEW_TOKEN}})).json();
+  const dashboardResponse=await fetch(base+'/api/v1/dashboard');
+  assert.equal(dashboardResponse.status,200);
+  const data=await dashboardResponse.json();
   assert.equal(data.sessions.length,2);
   assert.equal(data.agents.find(row=>row.kind==='subagent').count,1);
   assert.equal(data.quota[0].used_percent,'23');

@@ -1,6 +1,5 @@
 const byId = id => document.getElementById(id);
-const form = byId('login'), status = byId('status'), view = byId('dashboard'), logout = byId('logout');
-let access = sessionStorage.getItem('pulse-access') || '';
+const status = byId('status'), view = byId('dashboard');
 let request = 0;
 const stateLabel = {on_track:'正常推进',blocked:'已阻塞',unknown:'未知',completed:'已完成'};
 const date = value => value ? new Date(value).toLocaleString('zh-CN', {timeZone:'Asia/Singapore'}) : '—';
@@ -93,29 +92,18 @@ function render(data) {
   byId('quota-panel').hidden=!data.quota.length;
   table('quota',['姓名','提供商','额度窗口','已用','重置时间','观测时间'],data.quota.map(row=>[row.display_name,row.provider,row.limit_id+' / '+row.window_key,row.used_percent==null?'—':row.used_percent+'%',date(row.resets_at),date(row.observed_at)]));
 }
-function signOut() {
-  request++;
-  access=''; sessionStorage.removeItem('pulse-access');
-  view.hidden=true; logout.hidden=true; form.hidden=false; byId('access').value='';
-}
-async function load(preferAnonymous = false) {
+async function load() {
   const current=++request;
   status.textContent='读取中…';
   try {
-    const response=await fetch('/api/v1/dashboard?days='+byId('days').value,{headers:access && preferAnonymous !== true ? {Authorization:'Bearer '+access} : {}});
+    const response=await fetch('/api/v1/dashboard?days='+byId('days').value);
     if(current!==request) return;
-    if(response.status===401 && preferAnonymous === true && access) return load();
-    if(response.status===401) { const triedToken=!!access; signOut(); status.textContent=triedToken ? '访问令牌无效' : ''; return; }
     if(!response.ok) throw new Error();
     const data=await response.json();
     if(current!==request) return;
-    if (preferAnonymous === true) { access=''; sessionStorage.removeItem('pulse-access'); }
-    render(data); status.textContent=''; view.hidden=false; form.hidden=true; logout.hidden=access === '';
-    if(access) sessionStorage.setItem('pulse-access',access);
+    render(data); status.textContent=''; view.hidden=false;
   } catch { if(current===request) status.textContent='读取失败，请重试'; }
 }
-form.addEventListener('submit',event=>{event.preventDefault(); access=byId('access').value; void load();});
-logout.addEventListener('click',()=>{signOut();status.textContent='';});
 byId('days').addEventListener('change',load);
 byId('refresh').addEventListener('click',load);
-void load(true);
+void load();

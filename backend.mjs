@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import pg from 'pg';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -345,7 +345,6 @@ async function reportDirectory(pool, lan) {
 
 export function createApi({localView = false, lanEnrollment = false} = {}) {
   if (!process.env.DATABASE_URL) return null;
-  if (!localView && !process.env.PULSE_VIEW_TOKEN) throw new Error('PULSE_VIEW_TOKEN is required with DATABASE_URL');
   const pool = new pg.Pool({connectionString:process.env.DATABASE_URL,max:5,connectionTimeoutMillis:3000,statement_timeout:5000});
   pool.on('error', error => console.error('Database pool:',error.code || 'error'));
   return {
@@ -373,12 +372,6 @@ export function createApi({localView = false, lanEnrollment = false} = {}) {
           res.setHeader('Cache-Control','no-store');
           data = await reportCursor(pool,token,url.searchParams.get('source_id'),lan);
         } else if (req.method==='GET' && url.pathname==='/api/v1/dashboard') {
-          if (localView) {
-            const host = req.headers.host || '';
-            if (!/^(127\.0\.0\.1|localhost)(:[0-9]+)?$/i.test(host) ||
-                !['127.0.0.1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress) ||
-                (req.headers.origin && req.headers.origin !== 'http://' + host)) fail(403,'local_view_only');
-          } else if (!token || !timingSafeEqual(digest(token),digest(process.env.PULSE_VIEW_TOKEN))) fail(401,'login_required');
           const days = Number(url.searchParams.get('days') || 7);
           if (![1,7,30].includes(days)) fail(422,'invalid_days');
           data = await dashboard(pool,days);

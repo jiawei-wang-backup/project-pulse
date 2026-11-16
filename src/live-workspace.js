@@ -8,7 +8,6 @@ const tone = {on_track:'green',blocked:'red',unknown:'muted',completed:'green'};
 const periods = {1:'今天',7:'近 7 天',30:'近 30 天'};
 let days = Number(sessionStorage.getItem('pulse-days')) || 7;
 if (!periods[days]) days = 7;
-let access = sessionStorage.getItem('pulse-access') || '';
 let data = null;
 let loading = false;
 let error = '';
@@ -346,10 +345,6 @@ function memberPage(name) {
 function sessionsPage() { return `${heading('近期会话与总结')}${section(`${icon('activity')}会话`,sessionGroups(data.sessions))}`; }
 function outputsPage() { return `${heading('产出文档')}${section(`${icon('document')}文档清单`,pulls(data.pulls))}`; }
 function render() {
-  if (error==='login_required') {
-    app.innerHTML=`<main class="live-login"><div class="brand"><span class="brand-mark">${icon('pulse')}</span><span class="brand-name">Project Pulse</span></div><h1>查看工作台</h1><form id="login"><label for="access">看板访问令牌</label><input id="access" type="password" required autocomplete="current-password"><button class="button-secondary">进入</button></form><p>${access?'访问令牌无效':''}</p></main>`;
-    return;
-  }
   if (!data) { app.innerHTML=`<div class="boot-state" role="status"><span class="boot-mark">P</span>${esc(error||'正在读取工作台…')} <button class="button-secondary" id="refresh">重试</button></div>`;return; }
   const current=route(), names={overview:'总览',team:'团队成员',member:current.name,sessions:'近期会话与总结',outputs:'产出文档',project:projectName(current.key)};
   const content=current.page==='project'?projectPage(current.key):current.page==='member'?memberPage(current.name):current.page==='team'?teamPage():current.page==='sessions'?sessionsPage():current.page==='outputs'?outputsPage():overview();
@@ -360,8 +355,7 @@ async function load() {
   if (loading) return;
   loading=true;error='';if (!data) render();
   try {
-    const response=await fetch(`/api/v1/dashboard?days=${days}`,{headers:access?{Authorization:`Bearer ${access}`}:{}});
-    if (response.status===401) {error='login_required';data=null;access='';sessionStorage.removeItem('pulse-access');return;}
+    const response=await fetch(`/api/v1/dashboard?days=${days}`);
     if (!response.ok) throw new Error('数据读取失败，请重试');
     data=await response.json();
   } catch (cause) {error=cause.message||'数据读取失败，请重试';}
@@ -376,6 +370,5 @@ document.addEventListener('click',event=>{
   if (event.target.closest('#menu')) {document.body.classList.add('live-nav-open');return;}
   if (event.target.closest('#backdrop, .sidebar a')) document.body.classList.remove('live-nav-open');
 });
-document.addEventListener('submit',event=>{if(event.target.id!=='login')return;event.preventDefault();access=document.querySelector('#access').value;sessionStorage.setItem('pulse-access',access);void load();});
 window.addEventListener('hashchange',()=>{render();window.scrollTo(0,0);});
 void load();

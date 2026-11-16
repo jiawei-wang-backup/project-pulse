@@ -9,7 +9,7 @@
 ## 启用 PostgreSQL
 
 1. 创建空数据库。用数据库管理凭证执行 `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/001_init.sql -f db/002_session_title.sql -f db/003_session_display_title.sql -f db/004_session_workspace.sql -f db/005_project_reports.sql -f db/006_report_cursors.sql -f db/007_github_identities.sql`。已有数据库只需执行尚未应用的迁移。
-2. 设置 `DATABASE_URL` 和独立的 `PULSE_VIEW_TOKEN`，运行 `npm start`。默认监听本机。团队部署时通过 HTTPS 反向代理暴露服务，数据库留在内网。看板以团队共享访问令牌登录，单设备采集凭证不能读取看板。
+2. 设置 `DATABASE_URL` 并运行 `npm start`。默认监听本机。团队部署时通过 HTTPS 反向代理暴露服务，数据库留在内网。看板读取接口无需登录；设备上报仍使用每台设备独立的采集凭证。
 3. 管理员核对 GitHub 用户名后，在服务端为每台设备执行 `node db/admin.mjs enroll-github USERNAME`。同一个 GitHub 数字用户 ID 自动复用成员 UUID，每台电脑仍得到独立设备令牌。已有成员首次绑定时执行 `node db/admin.mjs enroll-github USERNAME <developer_uuid>`，已有设备和历史记录继续归属于该成员。不使用 GitHub 时仍可执行 `node db/admin.mjs enroll "姓名" [developer_uuid]`。只将新令牌发给对应成员。撤销单台设备可执行 `node db/admin.mjs revoke <device_uuid>`。
 4. 执行 `node db/admin.mjs repo owner/repo "业务分类"` 登记项目。私有仓库需在服务端配置拥有仓库及 PR 读取权限的 `PULSE_GITHUB_TOKEN`。用系统调度每 30 分钟运行 `npm run sync:prs`，也可手动触发。
 
