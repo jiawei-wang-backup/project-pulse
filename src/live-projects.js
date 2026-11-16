@@ -1,5 +1,13 @@
 export const researchProjectCount = projects => projects.filter(project=>['on_track','blocked'].includes(project.status)).length;
 
+export function isRunningAgent(agent,now=Date.now()) {
+  if(!agent) return false;
+  const age=now-Date.parse(agent.last_activity_at);
+  if(!Number.isFinite(age)||age<0) return false;
+  if(agent.state==='running') return age<=2*3600000;
+  return agent.state==='unknown' && agent.is_running===true && age<=30*60000;
+}
+
 export function memberProjectKeys(data,name,projectKey,key='') {
   const rows=[...(data.memberships||[]),...(data.sessions||[])].filter(row=>row.display_name===name);
   const names=[...new Set(rows.map(projectKey).filter(Boolean))];

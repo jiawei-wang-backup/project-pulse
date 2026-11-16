@@ -208,6 +208,25 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
     assert.equal(statusBatches.size,1);
     assert.deepEqual(totals,beforeStatus);
     assert.equal(cursors.get(source).offset,offsetBeforeStatus);
+    // A missing start event must not hide actual activity; terminal events
+    // still win over trailing accounting snapshots.
+    const activitySource=randomUUID(),activityFile=join(migrated,`${activitySource}.jsonl`);
+    const activityMeta={...meta,payload:{...meta.payload,id:activitySource}};
+    const activeRows=[activityMeta,{type:'response_item',timestamp:at,payload:{type:'function_call'}},token(10,5,1)];
+    await writeFile(activityFile,activeRows.map(JSON.stringify).join('\n')+'\n');
+    const activeWork=join(root,'active-no-start');await invoke('Prepare',activeWork);
+    let activePlan=JSON.parse(await readFile(join(activeWork,'plan.json')));
+    assert.equal(activePlan.batches.find(b=>b.cursor.source_id===activitySource).agents[0].state,'running');
+    await invoke('Submit',activeWork);
+    await writeFile(activityFile,activeRows.concat({type:'event_msg',timestamp:at,payload:{type:'task_complete'}},token(12,6,2)).map(JSON.stringify).join('\n')+'\n');
+    const completedWork=join(root,'completed-with-trailing-usage');await invoke('Prepare',completedWork);
+    activePlan=JSON.parse(await readFile(join(completedWork,'plan.json')));
+    assert.equal(activePlan.batches.find(b=>b.cursor.source_id===activitySource).agents[0].state,'completed');
+    await invoke('Submit',completedWork);
+    const scopedWork=join(root,'scoped');
+    const scoped=await invoke('Prepare',scopedWork,windows?['-OnlySource',randomUUID()]:['--only-source',randomUUID()]);
+    assert.equal(scoped.prepared_batches,0);
+    assert.equal(scoped.usage.events,0);
   } finally {
     await new Promise(resolve=>server.close(resolve));
     await rm(root,{recursive:true,force:true});

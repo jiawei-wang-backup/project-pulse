@@ -189,6 +189,18 @@ try {
   assert.equal((await dashboard(pool,1)).projects.find(p=>p.full_name==='example/lifecycle').status,'on_track');
   assert.equal((await assess('paused','progress_observed')).result.error,'invalid_project_status');
   assert.equal((await assess('blocked','repeated_failure',oldAt,randomUUID())).result.error,'status_session_missing');
+  const runningBefore=(await dashboard(pool,7)).running;
+  const activityFixtures=[];
+  for(const [state,minutes,withUsage] of [['running',90,false],['unknown',10,true],['running',181,false],['completed',1,true],['idle',1,true]]) {
+    const session=randomUUID(),agent=randomUUID(),last=new Date(Date.now()-minutes*60000);
+    await pool.query("INSERT INTO sessions(device_id,session_id,tool_id,repository_id,revision,last_activity_at) VALUES ($1,$2,'codex',$3,1,$4)",[device,session,lifecycleRepo,last]);
+    await pool.query("INSERT INTO agents(device_id,session_id,agent_id,kind,state,last_activity_at,revision) VALUES ($1,$2,$3,'main',$4,$5,1)",[device,session,agent,state,last]);
+    if(withUsage) await pool.query("INSERT INTO usage_events(device_id,event_id,session_id,agent_id,occurred_at,model,accounting,input_tokens,cached_input_tokens,output_tokens) VALUES ($1,$2,$3,$4,$5,'activity-fixture','billable',1,0,0)",[device,randomUUID(),session,agent,last]);
+    activityFixtures.push({agent,expected:state==='running'&&minutes===90 || state==='unknown'});
+  }
+  const activityData=await dashboard(pool,7);
+  assert.equal(activityData.running,runningBefore+2);
+  for(const row of activityFixtures) assert.equal(activityData.agent_details.find(a=>a.agent_id===row.agent).is_running,row.expected);
   const start=+dashboardCutoff(1),snapshot=start+12*3600000;
   for(const [time,input,cached,output] of [[start-1,1000,800,100],[start,3,2,1],[snapshot,5,2,2],[snapshot+1,9000,8000,900]]) {
     await pool.query("INSERT INTO usage_events(device_id,event_id,session_id,occurred_at,model,accounting,input_tokens,cached_input_tokens,output_tokens) VALUES ($1,$2,$3,$4,'boundary-fixture','billable',$5,$6,$7)",[device,randomUUID(),sourceId,new Date(time),input,cached,output]);

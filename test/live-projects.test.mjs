@@ -1,11 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {researchProjectCount,memberProjectKeys,renderProjectDocuments} from '../src/live-projects.js';
+import {researchProjectCount,memberProjectKeys,renderProjectDocuments,isRunningAgent} from '../src/live-projects.js';
 import {dashboardCutoff} from '../backend.mjs';
 import {escapeHtml} from '../src/domain.js';
 
 test('在研包括阻塞，不依赖Agent或最近活动，不包括完成、暂停及未知',()=>{
   assert.equal(researchProjectCount(['on_track','blocked','completed','paused','unknown'].map(status=>({status,last_activity_at:'2000-01-01',agents:[]}))),2);
+});
+test('Agent窗口放宽到2小时，未知状态需近期用量证据，终止状态不冒充运行中',()=>{
+  const now=Date.now(),agent=(state,minutes,extra={})=>({state,last_activity_at:new Date(now-minutes*60000).toISOString(),...extra});
+  assert.equal(isRunningAgent(agent('running',90),now),true);
+  assert.equal(isRunningAgent(agent('running',121),now),false);
+  assert.equal(isRunningAgent(agent('unknown',10,{is_running:true}),now),true);
+  assert.equal(isRunningAgent(agent('unknown',31,{is_running:true}),now),false);
+  for(const state of ['idle','completed','failed']) assert.equal(isRunningAgent(agent(state,1,{is_running:true}),now),false);
 });
 test('成员项目始终合并长期关系和近期会话，不按同名仓库尾部误合并',()=>{
   const data={memberships:[{display_name:'A',full_name:'one/app'},{display_name:'A',full_name:'two/app'}],sessions:[{display_name:'A',full_name:'one/app'},{display_name:'A',full_name:'new/project'}]};

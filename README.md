@@ -6,7 +6,7 @@
 
 ## 下载上报包
 
-**[下载当前版本 ZIP：project-pulse-report-3.1.0.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.1.0-20261116-r2/project-pulse-report-3.1.0.zip)**
+**[下载当前版本 ZIP：project-pulse-report-3.1.1.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.1.1-20261116/project-pulse-report-3.1.1.zip)**
 
 [始终下载最新版本](https://github.com/jiawei-wang-dev/project-pulse/releases/latest/download/project-pulse-report-latest.zip)
 
@@ -65,7 +65,7 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，执�
 
 下载新 ZIP，覆盖原永久解压目录，保留 `.pulse-state-*.json`、`.pulse-project-paths.json`、`.pulse-pending/`，再发送上面的提示词。更新原任务的正文并重新核验，不重复创建。待发请求先恢复，不清空游标或重新导入历史 Token。
 
-当前包3.1.0使用协议3。真正服务端需先执行009_project_lifecycle迁移并重启，提供 `usage_receipt`、`project_mapping_backfill`、`client_pr_ingest`、`client_project_status` 能力。更新ZIP不会自动更新另一台电脑的服务端或已存在的定时任务。
+当前包3.1.1使用协议3。真正服务端需先执行009_project_lifecycle迁移并重启，提供 `usage_receipt`、`project_mapping_backfill`、`client_pr_ingest`、`client_project_status` 能力。Agent识别窗口现为2小时，并补足缺少开始事件的活动识别；已完成、取消或失败的任务不因此复活。更新ZIP不会自动更新另一台电脑的服务端或已存在的定时任务。
 
 ## 服务端与开发
 

@@ -11,16 +11,20 @@ use FindBin;
 use File::Path qw(make_path);
 use Cwd qw(abs_path);
 use Fcntl qw(O_WRONLY O_CREAT O_EXCL);
+use File::Spec;
 
 my ($state_dir,$github_login,$resolve_git,$project_map) = ($FindBin::Bin,undef,0,undef);
 my @session_roots;
+my @only_sources;
 my ($action,$work,$server,$label,$exclude,$include,$tool) =
   ('Prepare',undef,'http://192.168.16.70:4185',undef,undef,0,'codex');
 GetOptions('action=s'=>\$action,'work-dir=s'=>\$work,'server=s'=>\$server,'label=s'=>\$label,
     'exclude-session-id=s'=>\$exclude,'include-evidence'=>\$include,'summarizer-tool=s'=>\$tool,
     'state-dir=s'=>\$state_dir,'github-login=s'=>\$github_login,'resolve-git'=>\$resolve_git,
-    'session-root=s@'=>\@session_roots,'project-map=s'=>\$project_map) or die "Invalid options\n";
+    'session-root=s@'=>\@session_roots,'project-map=s'=>\$project_map,'only-source=s@'=>\@only_sources) or die "Invalid options\n";
 die "Expected Prepare or Submit and --work-dir\n" unless $work && $action =~ /\A(?:Prepare|Submit)\z/;
+$work=File::Spec->rel2abs($work);
+$state_dir=File::Spec->rel2abs($state_dir);
 die "Invalid tool ID\n" unless $tool =~ /\A[a-z][a-z0-9_]{0,63}\z/;
 $server =~ s{/$}{};
 die "Expected private IPv4 HTTP origin\n" unless $server =~ m{\Ahttp://((?:10\.|192\.168\.|172\.(?:1[6-9]|2[0-9]|3[01])\.)[0-9.]+)(?::[1-9][0-9]{0,4})?\z}
@@ -154,12 +158,12 @@ if ($action eq 'Submit') {
         my $project = $session ? ($session->{repository} // $session->{workspace_name}) : undef;
         if ($session && $edit->{summary}) {
             $batch->{summaries} = [{summary_id=>id("codex:summary:$source:$end"),session_id=>$source,
-                observed_at=>$session->{last_activity_at},summary=>$edit->{summary},summarizer_tool=>$tool,prompt_version=>'3.1.0'}];
+                observed_at=>$session->{last_activity_at},summary=>$edit->{summary},summarizer_tool=>$tool,prompt_version=>'3.1.1'}];
         }
         if ($project && $edit->{goal} && $edit->{milestones}) {
             $batch->{projects} = [{report_id=>id("codex:project:$source:$end:$project"),source_session_id=>$source,
                 project_key=>$project,goal=>$edit->{goal},milestones=>$edit->{milestones},
-                observed_at=>$session->{last_activity_at},summarizer_tool=>$tool,prompt_version=>'3.1.0'}];
+                observed_at=>$session->{last_activity_at},summarizer_tool=>$tool,prompt_version=>'3.1.1'}];
         }
         my $body = "$work/$batch->{batch_id}.json";
         write_json($body,$batch) unless -e $body;
@@ -328,6 +332,7 @@ for my $entry (@files) {
     my $p = $meta->{payload};
     my $source = lc($p->{id} // '');
     next unless $source =~ $uuid;
+    next if @only_sources && !grep {lc($_) eq $source} @only_sources;
     my $head_hash=sha256_hex($first);
     if (defined $scan_state->{source_headers}{$source} && $scan_state->{source_headers}{$source} ne $head_hash) {
         $skips{$checked}='source_header_changed_requires_confirmation'; next;
@@ -348,7 +353,7 @@ for my $entry (@files) {
         }
         if ($resolved_repo && $cursor->{session_exists} && ($cursor->{project_key}//'') ne $resolved_repo) {
             if (grep {$_ eq 'project_mapping_backfill'} @{$directory->{capabilities}//[]}) {
-                push @batches,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),collector_version=>'3.1.0',
+                push @batches,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),collector_version=>'3.1.1',
                     sessions=>[],agents=>[],summaries=>[],projects=>[],usage=>[],
                     mappings=>[{session_id=>$source,repository=>$resolved_repo}],
                     cursor=>{source_id=>$source,from_offset=>$from,to_offset=>$from,context=>$cursor->{context}}};
@@ -364,6 +369,7 @@ for my $entry (@files) {
     my $context = $cursor->{context} // {};
     my $source_cutoff=$context->{report_from} // ($from>0 ? '1970-01-01T00:00:00Z' : $cutoff);
     my ($model,$activity,$state) = ($context->{model},undef,undef);
+    my $terminal=0;
     my $agent = id("codex:agent:$source");
     my (@usage,@notes);
     while ($buffer =~ /([^\n]*)\n/g) {
@@ -384,11 +390,15 @@ for my $entry (@files) {
         if ($row->{type} eq 'turn_context' && ($data->{model}//'') =~ /\A[\w.\/:\-]{1,100}\z/) {
             $model = $data->{model};
         }
-        next unless $row->{type} eq 'event_msg';
         my $at = $row->{timestamp} // '';
         next unless $at =~ /\A\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z\z/;
         my $recent = substr($at,0,19) ge substr($source_cutoff,0,19);
         my $type = $data->{type} // '';
+        if ($recent && (($row->{type} eq 'event_msg' && $type =~ /\A(?:user_message|agent_message|agent_reasoning)\z/) ||
+            ($row->{type} eq 'response_item' && $type =~ /\A(?:function_call|function_call_output|custom_tool_call|custom_tool_call_output)\z/))) {
+            $activity=$at;$state='running';$terminal=0;
+        }
+        next unless $row->{type} eq 'event_msg';
         if ($type eq 'token_count' && ref($data->{info}{total_token_usage}) eq 'HASH') {
             my $total = $data->{info}{total_token_usage};
             my %delta;
@@ -416,10 +426,13 @@ for my $entry (@files) {
                 push @usage,{%delta,event_id=>id("codex:usage:$source:$position"),session_id=>$source,agent_id=>$agent,
                     occurred_at=>$at,provider=>undef,model=>$model,accounting=>'billable'};
                 $activity=$at;
+                my $effective=$state // $cursor->{agent_state} // 'unknown';
+                $state='running' if !$terminal && $effective !~ /\A(?:completed|failed|idle)\z/;
             }
         } elsif ($recent && $type =~ /\A(?:task_started|task_complete|turn_aborted)\z/) {
             $activity=$at;
             $state={task_started=>'running',task_complete=>'completed',turn_aborted=>'idle'}->{$type};
+            $terminal=$type eq 'task_started' ? 0 : 1;
             if ($type eq 'task_complete' && $include) {
                 my $note = narrative($data->{last_agent_message});
                 push @notes,$note if $note =~ /\S/;
@@ -444,7 +457,7 @@ for my $entry (@files) {
         }
     }
     my $batch_id = uuid4();
-    push @batches,{schema_version=>1,batch_id=>$batch_id,sent_at=>now(),collector_version=>'3.1.0',
+    push @batches,{schema_version=>1,batch_id=>$batch_id,sent_at=>now(),collector_version=>'3.1.1',
         sessions=>\@sessions,agents=>\@agents,summaries=>[],projects=>[],usage=>\@usage,
         cursor=>{source_id=>$source,from_offset=>$from,to_offset=>$end,
             context=>{model=>$model,report_from=>$source_cutoff,map { $_=>$context->{$_} } @counts}}};
@@ -458,7 +471,7 @@ $scan_state->{next_index}=($scan_state->{next_index}//0)+$checked;
 $scan_state->{pending_work}=$work if @batches;
 write_json($plan_file,{batches=>\@batches,bytes_read=>$bytes,backlog=>$backlog,label=>$label,github_login=>$github_login});
 write_json("$state_file.tmp",$scan_state); rename "$state_file.tmp",$state_file or die "Cannot persist scan progress\n";
-print $json->encode({collector_version=>'3.1.0',server=>$server,prepared_batches=>scalar @batches,usage=>usage_totals([map {@{$_->{usage}}} @batches]),
+print $json->encode({collector_version=>'3.1.1',server=>$server,prepared_batches=>scalar @batches,usage=>usage_totals([map {@{$_->{usage}}} @batches]),
     bytes_read=>$bytes,backlog=>$backlog,diagnostics=>$diagnostics,evidence=>\@evidence}),"\n";
 sub min { $_[0]<$_[1] ? $_[0] : $_[1] }
 

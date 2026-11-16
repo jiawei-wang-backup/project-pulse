@@ -1,5 +1,5 @@
 import { icon } from './icons.js';
-import {researchProjectCount,memberProjectKeys,renderProjectDocuments} from './live-projects.js';
+import {researchProjectCount,memberProjectKeys,renderProjectDocuments,isRunningAgent} from './live-projects.js';
 
 const app = document.querySelector('#app');
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
@@ -205,15 +205,14 @@ function agentCards(items) {
   return `<div class="live-agent-grid">${items.map(row=>`<article class="live-agent-card"><div class="live-agent-top"><span class="model-mark" style="--model-color:var(--lime)">${esc((row.tool_id||'A').slice(0,1).toUpperCase())}</span><div><strong>${esc(row.tool_id||'开发工具')} · ${esc(row.kind==='subagent'?'子 Agent':'主 Agent')}</strong><small>${esc(row.model||'模型未知')}</small></div><span class="status-badge tone-green">运行中</span></div><h3>${esc(row.display_title||row.title||'未命名会话')}</h3><p>${esc(row.display_name)} · ${esc(projectName(projectKey(row)))}</p><time>${date(row.last_activity_at)}</time></article>`).join('')}</div>`;
 }
 function runningAgents(key='') {
-  const fresh=Date.now()-60*60*1000;
-  return (data.agent_details||[]).filter(row=>row.state==='running' && new Date(row.last_activity_at).getTime()>=fresh && (!key||projectKey(row)===key));
+  return (data.agent_details||[]).filter(row=>isRunningAgent(row) && (!key||projectKey(row)===key));
 }
 function activityPanel(key='') {
   const rows=data.sessions.filter(row=>!key||projectKey(row)===key).slice(0,6);
   const usage=new Map((data.session_usage||[]).map(row=>[row.session_id,BigInt(row.input_tokens||0)+BigInt(row.output_tokens||0)]));
   return `<section class="panel activity-panel live-activity-panel"><div class="panel-head"><h2 class="panel-title">近期 AI 活动 <span class="section-count">${rows.length}</span></h2><a class="text-button" href="#/sessions">全部会话 ${icon('arrow')}</a></div>${rows.length?`<div class="activity-header"><span>会话 / 开发工具</span><span class="activity-project">所属项目</span><span>状态</span><span>Token</span><span class="activity-time">最近更新</span></div><div class="activity-list">${rows.map(row=>{
     const agent=(data.agent_details||[]).find(item=>item.session_id===row.session_id);
-    const running=agent?.state==='running' && new Date(agent.last_activity_at).getTime()>=Date.now()-3600000;
+    const running=isRunningAgent(agent);
     const used=usage.get(row.session_id);
     return `<div class="activity-row"><span class="activity-task"><span class="model-mark" style="--model-color:var(--lime)">${esc((row.tool_id||'A').slice(0,1).toUpperCase())}</span><span><strong title="${esc(row.display_title||row.title||'未命名会话')}">${esc(row.display_title||row.title||'未命名会话')}</strong><small>${esc(row.tool_id||'开发工具')} · ${esc(row.display_name||'')}</small></span></span><span class="activity-project">${esc(projectName(projectKey(row)))}</span><span class="status-badge tone-${running?'green':'muted'}">${running?'运行中':'已结束'}</span><span class="activity-cost">${used?`${count(used)} Token`:'暂无用量'}</span><time class="activity-time">${date(row.last_activity_at)}</time></div>`;
   }).join('')}</div>`:empty('暂无 AI 活动')}</section>`;

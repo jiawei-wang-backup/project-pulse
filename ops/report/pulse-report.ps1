@@ -10,7 +10,8 @@ param(
     [string]$GitHubLogin,
     [switch]$ResolveGit,
     [string[]]$SessionRoot = @(),
-    [string]$ProjectMap
+    [string]$ProjectMap,
+    [string[]]$OnlySource = @()
 )
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false, $true)
@@ -123,14 +124,14 @@ if ($Action -eq 'Submit') {
             $end = $batch.cursor.to_offset
             if ($edit[0].summary -and $session -and $batch.cursor.from_offset -ne $end) {
                 $batch.summaries = @(@{summary_id=(StableId "codex:summary:${source}:$end"); session_id=$source;
-                    observed_at=$session.last_activity_at; summary=$edit[0].summary; summarizer_tool=$SummarizerTool; prompt_version='3.1.0'})
+                    observed_at=$session.last_activity_at; summary=$edit[0].summary; summarizer_tool=$SummarizerTool; prompt_version='3.1.1'})
             }
             if ($edit[0].goal -and $edit[0].milestones -and $session) {
                 $project = if ($session.repository) { $session.repository } else { $session.workspace_name }
                 if ($project) {
                     $batch.projects = @(@{report_id=(StableId "codex:project:${source}:${end}:$project"); source_session_id=$source;
                         project_key=$project; goal=$edit[0].goal; milestones=@($edit[0].milestones);
-                        observed_at=$session.last_activity_at; summarizer_tool=$SummarizerTool; prompt_version='3.1.0'})
+                        observed_at=$session.last_activity_at; summarizer_tool=$SummarizerTool; prompt_version='3.1.1'})
                 }
             }
         }
@@ -280,6 +281,7 @@ foreach ($file in $files) {
         if ($lf -lt 0) { $skips[[string]$checked]='metadata_exceeds_budget_or_incomplete'; continue }
         $meta = $utf8.GetString($head,0,$lf) | ConvertFrom-Json
         $source = ([string]$meta.payload.id).ToLowerInvariant()
+        if ($OnlySource.Count -and $source -notin $OnlySource) {continue}
         if ($meta.type -ne 'session_meta' -or $source -notmatch '^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$' -or
             $meta.payload.source.subagent -or $meta.payload.parent_thread_id -or $source -eq $ExcludeSessionId -or
             $source -in $scanState.excluded) { $excluded++; continue }
@@ -301,7 +303,7 @@ foreach ($file in $files) {
             }
             if ($resolvedRepo -and $cursor.session_exists -and $cursor.project_key -ne $resolvedRepo) {
                 if ('project_mapping_backfill' -in $directory.capabilities) {
-                    $batches+=@{schema_version=1;batch_id=[guid]::NewGuid().ToString();sent_at=[DateTime]::UtcNow.ToString('o');collector_version='3.1.0';
+                    $batches+=@{schema_version=1;batch_id=[guid]::NewGuid().ToString();sent_at=[DateTime]::UtcNow.ToString('o');collector_version='3.1.1';
                         sessions=@();agents=@();summaries=@();projects=@();usage=@();mappings=@(@{session_id=$source;repository=$resolvedRepo});
                         cursor=@{source_id=$source;from_offset=$from;to_offset=$from;context=$cursor.context}}
                 } else {$projectUnresolved.Add(@{source_id=$source;reason='server_project_mapping_upgrade_required'})}
@@ -321,6 +323,7 @@ foreach ($file in $files) {
         $usage = @()
         $activity = $null
         $state = if ($cursor.agent_state) { $cursor.agent_state } else { 'unknown' }
+        $terminal=$false
         $notes = @()
         $main = StableId "codex:agent:$source"
         $lineStart = 0
@@ -341,14 +344,19 @@ foreach ($file in $files) {
                 }
             }
             if ($row.type -eq 'turn_context' -and $p.model -match '^[\w./:-]{1,100}$') { $model = $p.model }
-            if ($row.type -ne 'event_msg' -or !$row.timestamp) { continue }
+            if (!$row.timestamp) { continue }
             $recent = ([DateTimeOffset]$row.timestamp).UtcDateTime -ge $sourceCutoff
+            if ($recent -and (($row.type -eq 'event_msg' -and $p.type -in @('user_message','agent_message','agent_reasoning')) -or
+                ($row.type -eq 'response_item' -and $p.type -in @('function_call','function_call_output','custom_tool_call','custom_tool_call_output')))) {
+                $activity=$row.timestamp;$state='running';$terminal=$false
+            }
+            if ($row.type -ne 'event_msg') {continue}
             switch ($p.type) {
-                'task_started' { if ($recent) { $activity=$row.timestamp; $state='running' } }
-                'turn_aborted' { if ($recent) { $activity=$row.timestamp; $state='idle' } }
+                'task_started' { if ($recent) { $activity=$row.timestamp; $state='running';$terminal=$false } }
+                'turn_aborted' { if ($recent) { $activity=$row.timestamp; $state='idle';$terminal=$true } }
                 'task_complete' {
                     if ($recent) {
-                        $activity=$row.timestamp; $state='completed'
+                        $activity=$row.timestamp; $state='completed';$terminal=$true
                         $note = if ($IncludeEvidence) { ([string]$p.last_agent_message -replace '(?s)```.*?(```|$)|https?://\S+|\S+@\S+|[A-Za-z]:[\\/]\S+|(?:^|\s)/\S+|(?:\b\S*(?:token|secret|password|api[_-]?key)\S*|\S{0,8}(?:密码|口令|令牌))\s*[:=\uff1a]\s*\S+',' [redacted] ') -replace '\s+',' ' } else { '' }
                         if ($IncludeEvidence -and $note.Trim()) { $notes = @($notes + $note.Substring(0,[Math]::Min(240,$note.Length)) | Select-Object -Last 2) }
                     }
@@ -379,6 +387,7 @@ foreach ($file in $files) {
                     if ($recent -and ($delta.input_tokens -gt 0 -or $delta.output_tokens -gt 0)) {
                         if ($delta.cached_input_tokens -gt $delta.input_tokens -and $null -ne $delta.input_tokens) { $delta.cached_input_tokens=$null }
                         $activity=$row.timestamp
+                        if (!$terminal -and $state -notin @('completed','failed','idle')) {$state='running'}
                         $usage += ($delta + @{event_id=(StableId "codex:usage:${source}:$position"); session_id=$source; agent_id=$main;
                             occurred_at=([DateTimeOffset]$row.timestamp).UtcDateTime.ToString('o'); provider=$null; model=$model; accounting='billable'})
                     }
@@ -406,7 +415,7 @@ foreach ($file in $files) {
             }
         }
         $batches += @{schema_version=1; batch_id=[guid]::NewGuid().ToString(); sent_at=[DateTime]::UtcNow.ToString('o');
-            collector_version='3.1.0'; sessions=$sessions; agents=$agents; summaries=@(); usage=$usage; projects=@();
+            collector_version='3.1.1'; sessions=$sessions; agents=$agents; summaries=@(); usage=$usage; projects=@();
             cursor=@{source_id=$source; from_offset=$from; to_offset=$end; context=@{model=$model;
                 report_from=$reportFrom;input_tokens=$counts.input_tokens; cached_input_tokens=$counts.cached_input_tokens; output_tokens=$counts.output_tokens}}}
     } finally { $stream.Dispose() }
@@ -416,5 +425,5 @@ if ($batches.Count) { $scanState.pending_work=$WorkDir }
 WriteJson $planPath @{batches=$batches; bytes_read=$bytesRead; backlog=$backlog;label=$Label;github_login=$GitHubLogin}
 WriteJson ($statePath+'.tmp') $scanState
 Move-Item -Force -LiteralPath ($statePath+'.tmp') -Destination $statePath
-@{collector_version='3.1.0';server=$Server;prepared_batches=$batches.Count;usage=(UsageTotals @($batches | ForEach-Object {$_.usage})); bytes_read=$bytesRead; backlog=$backlog;
+@{collector_version='3.1.1';server=$Server;prepared_batches=$batches.Count;usage=(UsageTotals @($batches | ForEach-Object {$_.usage})); bytes_read=$bytesRead; backlog=$backlog;
     diagnostics=@{checked_files=$checked;cursor_queries=$cursorQueries;unchanged_files=$unchanged;excluded_files=$excluded;project_unresolved=@($projectUnresolved.ToArray());session_roots_found=$roots.Count;discovery_checked=$discoveryChecked;discovery_incomplete=($queue.Count -gt 0);recovery_unverified=$scanState.recovery_unverified;initial_snapshots=$initialSnapshots;counter_resets=$counterResets;unmeasured_snapshots=$unmeasured;skipped=$skips}; evidence=$evidence} | ConvertTo-Json -Depth 20 -Compress

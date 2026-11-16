@@ -363,6 +363,16 @@ export async function ingestStatuses(pool,token,raw,lan=null) {
   } catch(error) {await db.query('ROLLBACK');throw error} finally {db.release()}
 }
 
+function activeAgentSql(alias,clock) {
+  return `(${alias}.last_activity_at<=${clock} AND (
+    (${alias}.state='running' AND ${alias}.last_activity_at>=${clock}-interval '120 minutes') OR
+    (${alias}.state='unknown' AND ${alias}.last_activity_at>=${clock}-interval '30 minutes' AND EXISTS (
+      SELECT 1 FROM usage_events active_usage WHERE active_usage.device_id=${alias}.device_id AND active_usage.agent_id=${alias}.agent_id
+        AND active_usage.occurred_at>=${clock}-interval '30 minutes' AND active_usage.occurred_at<=${clock}
+        AND (coalesce(active_usage.input_tokens,0)>0 OR coalesce(active_usage.output_tokens,0)>0)
+    ))))`;
+}
+
 export async function dashboard(pool, days, now = Date.now()) {
   const cutoff = dashboardCutoff(days,now);
   const end = new Date(now);
@@ -389,18 +399,18 @@ export async function dashboard(pool, days, now = Date.now()) {
       LEFT JOIN LATERAL (SELECT summary,summarizer_tool FROM session_summaries z WHERE z.device_id=s.device_id AND z.session_id=s.session_id
       ORDER BY observed_at DESC,summary_id LIMIT 1) x ON true WHERE s.last_activity_at >= $1 ORDER BY s.last_activity_at DESC LIMIT 100`,[cutoff]],
     [`SELECT a.kind,a.state,count(*)::int AS count FROM agents a WHERE a.last_activity_at >= $1 GROUP BY a.kind,a.state`,[cutoff]],
-    [`SELECT count(*)::int AS count FROM agents WHERE state='running' AND last_activity_at >= now()-interval '60 minutes'`,[]],
+    [`SELECT count(*)::int AS count FROM agents a WHERE ${activeAgentSql('a','$1::timestamptz')}`,[end]],
     [`SELECT r.full_name,p.* FROM pull_requests p JOIN repositories r USING(repository_id) ORDER BY r.full_name,p.created_at DESC,p.number DESC LIMIT 500`,[]],
     [`SELECT DISTINCT ON (q.account_id,q.limit_id,q.window_key) d.display_name,a.provider,q.limit_id,q.window_key,q.used_percent,q.resets_at,q.observed_at
       FROM quota_snapshots q JOIN provider_accounts a USING(account_id) JOIN developers d ON d.developer_id=q.developer_id
       ORDER BY q.account_id,q.limit_id,q.window_key,q.observed_at DESC`,[]],
-    [`SELECT a.agent_id,a.kind,a.role,a.state,a.last_activity_at,s.session_id,s.display_title,s.title,s.tool_id,s.workspace_name,r.full_name,d.display_name,u.provider,u.model
+    [`SELECT a.agent_id,a.kind,a.role,a.state,a.last_activity_at,${activeAgentSql('a','$2::timestamptz')} AS is_running,s.session_id,s.display_title,s.title,s.tool_id,s.workspace_name,r.full_name,d.display_name,u.provider,u.model
       FROM agents a JOIN sessions s ON s.device_id=a.device_id AND s.session_id=a.session_id
       JOIN devices v ON v.device_id=a.device_id JOIN developers d ON d.developer_id=v.developer_id
       LEFT JOIN repositories r ON r.repository_id=s.repository_id
       LEFT JOIN LATERAL (SELECT provider,model FROM usage_events WHERE device_id=a.device_id AND session_id=a.session_id
         ORDER BY occurred_at DESC LIMIT 1) u ON true
-      WHERE a.last_activity_at >= $1 ORDER BY a.last_activity_at DESC LIMIT 100`,[cutoff]],
+      WHERE a.last_activity_at >= $1 OR ${activeAgentSql('a','$2::timestamptz')} ORDER BY a.last_activity_at DESC LIMIT 100`,[cutoff,end]],
     [`SELECT to_char(u.occurred_at AT TIME ZONE 'Asia/Singapore','YYYY-MM-DD') AS day,
       sum(u.input_tokens) AS input_tokens,sum(u.output_tokens) AS output_tokens
       FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1 AND u.occurred_at <= $2
@@ -490,7 +500,7 @@ async function reportDirectory(pool, lan) {
       ORDER BY c.source_id`,[digest(lan.credential)])
   ]);
   if (current.rows[0]?.revoked_at) fail(401,'invalid_device');
-  return {protocol_version:3, recommended_collector_version:'3.1.0',
+  return {protocol_version:3, recommended_collector_version:'3.1.1',
     capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill','client_pr_ingest','client_project_status'],sources:sources.rows,
     members:members.rows,repositories:repositories.rows,
     current_display_name:current.rows[0]?.display_name ?? null};

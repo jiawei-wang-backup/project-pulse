@@ -1,12 +1,12 @@
 # Project Pulse macOS / Windows / Linux 快速上报包
 
-版本以 `VERSION` 为准（当前 3.1.0），需要服务端协议3、client_project_status能力，以及已应用009_project_lifecycle迁移。先阅读 `UPGRADE.md`，升级时保留隐藏状态和待续传目录。包内SHA256SUMS可核对完整性。
+版本以 `VERSION` 为准（当前 3.1.1），需要服务端协议3、client_project_status能力，以及已应用009_project_lifecycle迁移。先阅读 `UPGRADE.md`，升级时保留隐藏状态和待续传目录。包内SHA256SUMS可核对完整性。
 
 这是客户端上报包。解压后不要移动包内文件，在 Codex 打开解压后的 `project-pulse-report` 目录，把 `PROMPT.txt` 全文发给 Codex。不要直接在 ZIP 预览里执行。
 
 ## 下载与首次发送提示词
 
-[下载当前3.1.0上报ZIP](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.1.0-20261116-r2/project-pulse-report-3.1.0.zip) · [始终下载最新版本](https://github.com/jiawei-wang-dev/project-pulse/releases/latest/download/project-pulse-report-latest.zip) · [查看发布记录](https://github.com/jiawei-wang-dev/project-pulse/releases)
+[下载当前3.1.1上报ZIP](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.1.1-20261116/project-pulse-report-3.1.1.zip) · [始终下载最新版本](https://github.com/jiawei-wang-dev/project-pulse/releases/latest/download/project-pulse-report-latest.zip) · [查看发布记录](https://github.com/jiawei-wang-dev/project-pulse/releases)
 
 解压到永久目录，用Codex打开本文件夹，复制下面整段发送；也可直接发送PROMPT.txt全文。不要仅打开ZIP预览。
 
@@ -138,6 +138,10 @@ Submit先提交日志与用量，再将PR请求保存为不可变 `pr-request.js
 真正服务端需提供 `client_pr_ingest` 能力（更新代码并重启，无新迁移）；缺失时明确报告PR尚未同步，不能降级为“摘要里写了链接就算已上传”。回报日志回执与PR回执两项，再辅助检查Dashboard.pulls。只有PR已识别但未提交时不得声称全部同步完成。
 
 ## 客户端项目状态判断
+
+Agent识别与项目状态独立：新的用户消息、模型输出／推理、工具调用或未知状态下的新增Token可补足缺失的开始事件。明确运行状态的活动窗口由60分钟放宽为120分钟；legacy unknown状态需近30分钟真实用量证据。明确完成、取消、失败不靠时间猜测复活，尾部Token快照不把终止任务改回running。统计表示最近上报证据下的运行估计，不是实时进程探测；项目生命周期不受这个时间窗口影响。
+
+仅上报指定会话时可用macOS/Linux `--only-source <原生UUID>`（可重复）或Windows `-OnlySource <UUID>`；默认仍采集授权范围内主会话。此选项只筛选增量源，不清空历史游标或忽略已准备的待发请求；先完成既有待发批次再开始新的单项目范围。
 
 顶部“在研项目”统计on_track与blocked，与“运行中的Agent”独立。客户端Codex根据会话、目标、里程碑、上次状态以及明确的人类决定判断，不按最后活动时间推断。下班、开会、没有新日志或Token不构成阻塞、暂停或完成依据；Agent任务结束也不等于项目完成。
 
