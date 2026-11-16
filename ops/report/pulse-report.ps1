@@ -174,19 +174,19 @@ foreach ($file in $files) {
         } finally { $headStream.Dispose() }
         if ($n -eq 0) { continue }
         $lf = [Array]::IndexOf($head,[byte]10,0,$n)
-        if ($lf -lt 0) { $skips[$checked]='metadata_exceeds_budget_or_incomplete'; continue }
+        if ($lf -lt 0) { $skips[[string]$checked]='metadata_exceeds_budget_or_incomplete'; continue }
         $meta = $utf8.GetString($head,0,$lf) | ConvertFrom-Json
         $source = [string]$meta.payload.id
         if ($meta.type -ne 'session_meta' -or $source -notmatch '^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$' -or
             $meta.payload.source.subagent -or $meta.payload.parent_thread_id -or $source -eq $ExcludeSessionId -or
             $source -in $scanState.excluded) { $excluded++; continue }
-        if ($seenSources.ContainsKey($source)) { $skips[$checked]='duplicate_source'; continue }
+        if ($seenSources.ContainsKey($source)) { $skips[[string]$checked]='duplicate_source'; continue }
         $seenSources[$source] = $true
         $cursor = Request "/api/v1/report-cursor?source_id=$source"
         $cursorQueries++
         $from = [long]$cursor.offset
         if ($stream.Length -eq $from) { $unchanged++; continue }
-        if ($stream.Length -lt $from) { $skips[$checked]='file_truncated'; continue }
+        if ($stream.Length -lt $from) { $skips[[string]$checked]='file_truncated'; continue }
         $buffer = New-Object byte[] ([Math]::Min($stream.Length-$from,1048576-$bytesRead))
         [void]$stream.Seek($from,'Begin')
         $n = $stream.Read($buffer,0,$buffer.Length)
@@ -206,7 +206,7 @@ foreach ($file in $files) {
             if (($i % 4096) -eq 0 -and $scanClock.Elapsed.TotalSeconds -ge 12) { break }
             if ($buffer[$i] -ne 10) { continue }
             try { $row = $utf8.GetString($buffer,$lineStart,$i-$lineStart) | ConvertFrom-Json }
-            catch { $skips[$checked]='invalid_log_line'; break }
+            catch { $skips[[string]$checked]='invalid_log_line'; break }
             $position = $from+$lineStart
             $lineStart = $i+1
             $end = $from+$lineStart
@@ -215,7 +215,7 @@ foreach ($file in $files) {
                 $scanState.first_user_seen=@($scanState.first_user_seen)+@($source)
                 if ([string]$p.message -match '^PROJECT_PULSE_AUTOMATION(?:\b|\u3002)') {
                     $scanState.excluded=@($scanState.excluded)+@($source)
-                    $end=$from; $usage=@(); $skips[$checked]='reporting_session'; break
+                    $end=$from; $usage=@(); $skips[[string]$checked]='reporting_session'; break
                 }
             }
             if ($row.type -eq 'turn_context' -and $p.model -match '^[\w./:-]{1,100}$') { $model = $p.model }
@@ -265,7 +265,8 @@ foreach ($file in $files) {
             if ($usage.Count -ge 90) { break }
         }
         if ($end -lt $stream.Length) { $backlog = $true }
-        if ($end -eq $from) { $skips[$checked]='no_complete_line_within_budget'; continue }
+        if ($end -eq $from -and !$skips[[string]$checked]) { $skips[[string]$checked]='no_complete_line_within_budget' }
+        if ($end -eq $from) { continue }
         $sessions = @()
         $agents = @()
         if ($activity) {
