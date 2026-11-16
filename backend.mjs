@@ -13,12 +13,14 @@ function validate(report) {
   const hasQuota = report && Object.hasOwn(report,'quota');
   const hasProjects = report && Object.hasOwn(report,'projects');
   const hasCursor = report && Object.hasOwn(report,'cursor');
+  const hasMappings = report && Object.hasOwn(report,'mappings');
   if (hasQuota) arrays.push('quota');
   if (hasProjects) arrays.push('projects');
+  if (hasMappings) arrays.push('mappings');
   const keys = (row, fields) => {
     if (!row || typeof row !== 'object' || Object.keys(row).sort().join(' ') !== fields.split(' ').sort().join(' ')) fail(422, 'invalid_fields');
   };
-  keys(report, 'schema_version batch_id sent_at collector_version sessions agents summaries usage' + (hasQuota ? ' quota' : '') + (hasProjects ? ' projects' : '') + (hasCursor ? ' cursor' : ''));
+  keys(report, 'schema_version batch_id sent_at collector_version sessions agents summaries usage' + (hasQuota ? ' quota' : '') + (hasProjects ? ' projects' : '') + (hasCursor ? ' cursor' : '') + (hasMappings ? ' mappings' : ''));
   if (report.schema_version !== 1 || !uuid.test(report.batch_id) ||
       arrays.some(key => !Array.isArray(report[key])) ||
       arrays.reduce((sum, key) => sum + report[key].length, 0) > 100) fail(422, 'invalid_batch');
@@ -29,9 +31,10 @@ function validate(report) {
         !Number.isSafeInteger(cursor.to_offset) || cursor.from_offset < 0 ||
         cursor.to_offset < cursor.from_offset) fail(422,'invalid_cursor');
     if (cursor.to_offset === cursor.from_offset && (
-      cursor.from_offset === 0 || !report.projects?.length ||
-      arrays.some(key => key !== 'projects' && report[key].length) ||
-      report.projects.some(row => row?.source_session_id !== cursor.source_id)
+      cursor.from_offset === 0 || (!report.projects?.length && !report.mappings?.length) ||
+      arrays.some(key => !['projects','mappings'].includes(key) && report[key].length) ||
+      (report.projects || []).some(row => row?.source_session_id !== cursor.source_id) ||
+      (report.mappings || []).some(row => row?.session_id !== cursor.source_id)
     )) fail(422,'invalid_project_backfill');
     keys(cursor.context,'model input_tokens cached_input_tokens output_tokens' + (Object.hasOwn(cursor.context,'report_from') ? ' report_from' : ''));
     const {model,report_from,...counts} = cursor.context;
@@ -47,6 +50,10 @@ function validate(report) {
     summaries: 'summary_id session_id observed_at summary summarizer_tool prompt_version',
     usage: 'event_id session_id agent_id occurred_at provider model accounting input_tokens cached_input_tokens output_tokens'
   };
+  for (const row of report.mappings || []) {
+    keys(row,'session_id repository');
+    if (!uuid.test(row.session_id) || typeof row.repository!=='string' || !/^[\w.-]+\/[\w.-]+$/.test(row.repository) || row.repository.length>120) fail(422,'invalid_mapping');
+  }
   const timestamp = value => typeof value === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value) && Number.isFinite(Date.parse(value));
   const version = value => typeof value === 'string' && /^\d+\.\d+\.\d+$/.test(value) && value.length <= 32;
   if (!timestamp(report.sent_at) || !version(report.collector_version)) fail(422, 'invalid_metadata');
@@ -216,6 +223,13 @@ export async function ingest(pool, token, raw, lan = null) {
       for (const row of report.summaries) await upsert(client,'session_summaries',['device_id','summary_id'],{device_id,...row});
       for (const row of report.projects || []) await upsert(client,'project_reports',['device_id','report_id'],{device_id,...row,milestones:JSON.stringify(row.milestones)});
       for (const row of report.usage) await upsert(client,'usage_events',['device_id','event_id'],{device_id,...row});
+      for (const row of report.mappings || []) {
+        const repo=await client.query("SELECT repository_id FROM repositories WHERE lower(github_host)='github.com' AND lower(full_name)=lower($1)",[row.repository]);
+        const changed=await client.query('UPDATE sessions SET repository_id=$3,workspace_name=$4 WHERE device_id=$1 AND session_id=$2 RETURNING 1',
+          [device_id,row.session_id,repo.rows[0]?.repository_id ?? null,row.repository.toLowerCase()]);
+        if (!changed.rowCount) fail(422,'mapping_session_missing');
+        await client.query('UPDATE project_reports SET project_key=$3 WHERE device_id=$1 AND source_session_id=$2',[device_id,row.session_id,row.repository.toLowerCase()]);
+      }
       for (const {account_key,...row} of report.quota || []) {
         const {developer_id}=auth.rows[0];
         const account=await client.query(`INSERT INTO provider_accounts(account_id,developer_id,provider)
@@ -326,6 +340,7 @@ async function reportCursor(pool, token, sourceId, lan = null) {
   if (!token && !lan) fail(401,'invalid_device');
   if (!uuid.test(sourceId ?? '')) fail(422,'invalid_source_id');
   const result = await pool.query(`SELECT c.byte_offset,c.context,project.report,summary.summary AS latest_summary,agent.state AS agent_state,
+    coalesce(r.full_name,s.workspace_name) AS project_key,s.session_id IS NOT NULL AS session_exists,
     ARRAY(SELECT full_name FROM repositories WHERE lower(github_host)='github.com' ORDER BY full_name) AS repositories
     FROM (SELECT 1) seed
     LEFT JOIN devices d ON d.credential_digest=$1
@@ -346,8 +361,8 @@ async function reportCursor(pool, token, sourceId, lan = null) {
     WHERE d.revoked_at IS NULL AND (d.device_id IS NOT NULL OR $3::boolean)`,
     [digest(lan?.credential ?? token),sourceId,Boolean(lan)]);
   if (!result.rowCount) fail(401,'invalid_device');
-  const {byte_offset,context,repositories,report,latest_summary,agent_state} = result.rows[0];
-  return {source_id:sourceId,offset:Number(byte_offset ?? 0),context,repositories,project_report:report,latest_summary,agent_state};
+  const {byte_offset,context,repositories,report,latest_summary,agent_state,project_key,session_exists} = result.rows[0];
+  return {source_id:sourceId,offset:Number(byte_offset ?? 0),context,repositories,project_report:report,latest_summary,agent_state,project_key,session_exists};
 }
 
 async function reportDirectory(pool, lan) {
@@ -370,7 +385,7 @@ async function reportDirectory(pool, lan) {
   ]);
   if (current.rows[0]?.revoked_at) fail(401,'invalid_device');
   return {protocol_version:3, recommended_collector_version:'3.0.0',
-    capabilities:['usage_receipt','persistent_report_from'],sources:sources.rows,
+    capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill'],sources:sources.rows,
     members:members.rows,repositories:repositories.rows,
     current_display_name:current.rows[0]?.display_name ?? null};
 }

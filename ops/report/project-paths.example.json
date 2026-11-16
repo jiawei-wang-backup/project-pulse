@@ -1,0 +1,6 @@
+[
+  {
+    "old_path": "/old/absolute/project/path",
+    "new_path": "/confirmed/current/repository/path"
+  }
+]

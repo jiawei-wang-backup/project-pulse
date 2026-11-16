@@ -117,7 +117,7 @@ try {
     usage:{events:1,input_tokens:'10',cached_input_tokens:'2',output_tokens:'3'}};
   assert.deepEqual(await sendDirect(valid),receipt);
   assert.deepEqual(await sendDirect(valid),receipt);
-  const {project_report: previousProject,latest_summary,agent_state,...position} = await readCursor();
+  const {project_report: previousProject,latest_summary,agent_state,project_key,session_exists,...position} = await readCursor();
   assert.deepEqual(position,{source_id:sourceId,offset:250,context,repositories:['example/pulse']});
   assert.equal(latest_summary,'验证了直报事件的事务写入');
   assert.equal(agent_state,null);
@@ -138,6 +138,14 @@ try {
     [device,sourceId])).rows[0].project_state,'on_track');
   assert.equal((await pool.query('SELECT count(*) FROM usage_events WHERE device_id=$1 AND session_id=$2',
     [device,sourceId])).rows[0].count,'1');
+  const mapping={...heartbeat,batch_id:randomUUID(),projects:[],mappings:[{session_id:sourceId,repository:'example/moved'}],
+    cursor:{source_id:sourceId,from_offset:300,to_offset:300,context}};
+  assert.equal((await sendDirect(mapping)).status,'committed');
+  assert.equal((await readCursor()).project_key,'example/moved');
+  assert.equal((await readCursor()).offset,300);
+  assert.equal((await readCursor()).project_report.goal,'补齐项目目标');
+  assert.equal((await pool.query('SELECT count(*) FROM usage_events WHERE device_id=$1 AND session_id=$2',[device,sourceId])).rows[0].count,'1');
+  assert.equal((await sendDirect({...mapping,batch_id:randomUUID(),mappings:[{session_id:randomUUID(),repository:'example/moved'}]})).error,'invalid_project_backfill');
   const enrollGitHub = async (user, existingId) => {
     const db = await pool.connect();
     try {

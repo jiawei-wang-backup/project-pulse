@@ -64,10 +64,6 @@ sh ./pulse-report-linux.sh --action Submit --work-dir "<同一个待续传子目
 
 `-ResolveGit`／`--resolve-git` 只读授权会话工作目录的本地 Git remote，不遍历项目文件。以规范化的 GitHub `owner/repo` 关联项目；未登记仓库也保留规范项目键，之后管理员登记时可归入同一项目。无法确认远端时保留本地工作区，不按相似名字合并。
 
-## 创建并核对定时任务
-
-## PR与未识别项核对
-
 ## Codex更新、换号与会话目录迁移
 
 每轮Prepare检查当前 `CODEX_HOME`、当前用户默认 `.codex`、`.codex-*`／`.codex_*`、`.config/codex`，以及系统Codex候选目录（macOS Application Support、Windows APPDATA／LOCALAPPDATA），并复用状态文件里已经发现的sessions根目录。候选位置不保证每个Codex版本都会使用；只在Codex候选容器内检查最多64个目录、最多4层，跳过目录链接，不全盘搜索。根目录内部仍按当前已验证的日期层级JSONL格式解析；未来格式改变需要明确诊断后适配，不能猜字段。
@@ -76,7 +72,17 @@ sh ./pulse-report-linux.sh --action Submit --work-dir "<同一个待续传子目
 
 跨目录复制／迁移时，优先读取同原生会话ID的较完整副本，按原ID和服务端字节游标续传，不按文件路径新建会话。相同ID但首行元数据变化会返回 `source_header_changed_requires_confirmation`，需要确认后诊断，禁止清空游标或直接重复导入。`session_roots_found: 0`、无日志、`discovery_incomplete: true`或文件格式未识别都不等于没有Token用量：上报可确认部分后，必须反问用户是否更新／换号以及当前会话目录。
 
-## PR与字段完整性检查
+## 项目工作目录迁移
+
+日志的sessions目录与项目cwd是两个不同位置。项目迁移后不要求编辑历史日志：脚本复用已确认cwd对应的仓库缓存，或读取本包私有 `.pulse-project-paths.json` 的旧／新绝对路径映射，使用 `ResolveGit` 查询新目录的真实Git remote。可复制 `project-paths.example.json` 后填入用户已经确认的路径；Windows JSON中的反斜线需要转义，也可使用正斜线。只匹配明确的完整旧路径，不按目录名猜测、不全盘搜索仓库。macOS/Linux也可用 `--project-map <映射JSON路径>`，Windows用 `-ProjectMap <映射JSON路径>`。
+
+经核实的仓库关系会保存在本机状态中；以后目录暂时不可访问仍能沿用。原日志、当前remote和缓存存在冲突时，`diagnostics.project_unresolved` 返回原因，保留原日志能确认的归属并向用户追问，不静默覆盖。真实remote仍无法识别时继续上报已确认用量，列出待确认项目。
+
+对于已经上报且没有新日志的会话，脚本使用服务端目录能力 `project_mapping_backfill` 生成只含 `mappings` 的补报。服务端按本设备、本会话更新项目关联，并将该会话已有里程碑报告的项目键归到规范仓库；Token记录、会话字节游标和历史日志均不改变。已正确归属的会话不会反复产生补报。此能力需要真正服务端拉取本次更新并重启，无需数据库迁移。旧服务端会明确诊断需要升级。
+
+本机映射与状态可能包含本地绝对路径，只在本机使用，不加入分发ZIP或Git提交。升级时保留它们；跨电脑只分发空白示例。
+
+## PR与字段完整性核对细则
 
 每轮上报后必须按本轮涉及项目核对以下清单（即使上传成功也不能省略）：
 

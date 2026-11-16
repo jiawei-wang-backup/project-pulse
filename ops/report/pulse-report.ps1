@@ -9,7 +9,8 @@ param(
     [string]$StateDir = $PSScriptRoot,
     [string]$GitHubLogin,
     [switch]$ResolveGit,
-    [string[]]$SessionRoot = @()
+    [string[]]$SessionRoot = @(),
+    [string]$ProjectMap
 )
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false, $true)
@@ -28,6 +29,30 @@ function UsageTotals($Rows) {
     $result=@{events=@($Rows).Count;input_tokens=0L;cached_input_tokens=0L;output_tokens=0L}
     foreach ($row in $Rows) { foreach ($key in @('input_tokens','cached_input_tokens','output_tokens')) { $result[$key]+=[long]$row.$key } }
     return $result
+}
+function RepoName($Value) {
+    if ([string]$Value -match '^(?:https://github\.com/|git@github\.com:|ssh://git@(?:github\.com|ssh\.github\.com)(?::443)?/)([\w.-]+/[\w.-]+?)(?:\.git)?/?$') {return $Matches[1].ToLowerInvariant()}
+    return $null
+}
+function PathKey($Value) { return ([string]$Value).Replace('\','/').TrimEnd('/').ToLowerInvariant() }
+function ResolveProject($Payload,$Source) {
+    $key=PathKey $Payload.cwd
+    $original=RepoName $Payload.git.repository_url
+    $cached=$scanState.workspace_repositories.$key
+    $live=$null
+    $directory=if ($pathMappings.ContainsKey($key)) {$pathMappings[$key]} else {$Payload.cwd}
+    if ($ResolveGit -and $directory -and (Test-Path -LiteralPath $directory -PathType Container) -and (Get-Command git -ErrorAction SilentlyContinue)) {
+        $url=& git -C $directory config --local --get remote.origin.url 2>$null
+        $live=RepoName $url
+    }
+    $choices=@(@($original,$cached,$live) | Where-Object {$_} | Select-Object -Unique)
+    if ($choices.Count -gt 1) {$projectUnresolved.Add(@{source_id=$Source;reason='conflicting_repository_evidence'});return $original}
+    if ($choices.Count) {
+        if ($key) {$scanState.workspace_repositories | Add-Member -NotePropertyName $key -NotePropertyValue $choices[0] -Force}
+        return $choices[0]
+    }
+    $reason=if ($pathMappings.ContainsKey($key)) {'mapped_directory_has_no_verified_remote'} elseif ($Payload.cwd -and (Test-Path -LiteralPath $Payload.cwd -PathType Container)) {'repository_not_identified'} else {'workspace_moved_needs_mapping'}
+    $projectUnresolved.Add(@{source_id=$Source;reason=$reason});return $null
 }
 function Request($Route, $BodyPath) {
     $argsForCurl = @('-q','-fsS','--noproxy','*','--connect-timeout','2','--max-time','4',
@@ -127,6 +152,20 @@ $scanState=if (Test-Path -LiteralPath $statePath) { Get-Content -LiteralPath $st
 }
 if (!$Label) { $Label=$scanState.label }; $scanState.label=$Label
 if (!$GitHubLogin) { $GitHubLogin=$scanState.github_login }; $scanState.github_login=$GitHubLogin
+if (!$ProjectMap) {$ProjectMap=Join-Path $StateDir '.pulse-project-paths.json'}
+$pathMappings=@{}
+if (Test-Path -LiteralPath $ProjectMap) {
+    $raw=Get-Content -LiteralPath $ProjectMap -Raw -Encoding UTF8
+    if (!$raw.TrimStart().StartsWith('[')) {throw 'Project map must be an array.'}
+    foreach ($mapping in @($raw | ConvertFrom-Json)) {
+        if (!$mapping.old_path -or !$mapping.new_path) {throw 'Invalid project mapping.'}
+        $key=PathKey $mapping.old_path
+        if ($pathMappings.ContainsKey($key)) {throw 'Duplicate project mapping.'}
+        $pathMappings[$key]=$mapping.new_path
+    }
+}
+if (!$scanState.workspace_repositories) {$scanState | Add-Member -NotePropertyName workspace_repositories -NotePropertyValue ([pscustomobject]@{}) -Force}
+$projectUnresolved=[Collections.Generic.List[object]]::new()
 if ($scanState.pending_work -and (Test-Path -LiteralPath (Join-Path $scanState.pending_work 'plan.json'))) {
     $recovery=& $PSCommandPath -Action Submit -WorkDir $scanState.pending_work -Server $Server
     $recovered=($recovery -join "`n") | ConvertFrom-Json
@@ -211,7 +250,17 @@ foreach ($file in $files) {
         $cursor = Request "/api/v1/report-cursor?source_id=$source"
         $cursorQueries++
         $from = [long]$cursor.offset
-        if ($stream.Length -eq $from) { $unchanged++; continue }
+        $resolvedRepo=ResolveProject $meta.payload $source
+        if ($stream.Length -eq $from) {
+            if ($resolvedRepo -and $cursor.session_exists -and $cursor.project_key -ne $resolvedRepo) {
+                if ('project_mapping_backfill' -in $directory.capabilities) {
+                    $batches+=@{schema_version=1;batch_id=[guid]::NewGuid().ToString();sent_at=[DateTime]::UtcNow.ToString('o');collector_version='3.0.0';
+                        sessions=@();agents=@();summaries=@();projects=@();usage=@();mappings=@(@{session_id=$source;repository=$resolvedRepo});
+                        cursor=@{source_id=$source;from_offset=$from;to_offset=$from;context=$cursor.context}}
+                } else {$projectUnresolved.Add(@{source_id=$source;reason='server_project_mapping_upgrade_required'})}
+            }
+            $unchanged++; continue
+        }
         if ($stream.Length -lt $from) { $skips[[string]$checked]='file_truncated'; continue }
         $buffer = New-Object byte[] ([Math]::Min($stream.Length-$from,1048576-$bytesRead))
         [void]$stream.Seek($from,'Begin')
@@ -296,19 +345,7 @@ foreach ($file in $files) {
         $sessions = @()
         $agents = @()
         if ($activity) {
-            $repo = $null
-            if ($meta.payload.git.repository_url -match '^(?:https://github\.com/|git@github\.com:|ssh://git@(?:github\.com|ssh\.github\.com)(?::443)?/)([\w.-]+/[\w.-]+?)(?:\.git)?/?$') {
-                $remoteName = $Matches[1]
-                $repo = $remoteName.ToLowerInvariant()
-            }
-            if ($ResolveGit -and !$repo -and $meta.payload.cwd -and (Get-Command git -ErrorAction SilentlyContinue) -and
-                (Test-Path -LiteralPath $meta.payload.cwd -PathType Container)) {
-                $remote = & git -C $meta.payload.cwd config --local --get remote.origin.url 2>$null
-                if ($remote -match '^(?:https://github\.com/|git@github\.com:|ssh://git@(?:github\.com|ssh\.github\.com)(?::443)?/)([\w.-]+/[\w.-]+?)(?:\.git)?/?$') {
-                    $remoteName = $Matches[1]
-                    $repo = $remoteName.ToLowerInvariant()
-                }
-            }
+            $repo = $resolvedRepo
             $session = @{session_id=$source; tool='codex'; revision=$end; repository=$repo; started_at=$null;
                 last_activity_at=([DateTimeOffset]$activity).UtcDateTime.ToString('o'); project_observation=$null}
             $folder = if ($meta.payload.cwd) { Split-Path -Leaf ([string]$meta.payload.cwd) } else { '' }
@@ -333,4 +370,4 @@ WriteJson $planPath @{batches=$batches; bytes_read=$bytesRead; backlog=$backlog;
 WriteJson ($statePath+'.tmp') $scanState
 Move-Item -Force -LiteralPath ($statePath+'.tmp') -Destination $statePath
 @{collector_version='3.0.0';server=$Server;prepared_batches=$batches.Count;usage=(UsageTotals @($batches | ForEach-Object {$_.usage})); bytes_read=$bytesRead; backlog=$backlog;
-    diagnostics=@{checked_files=$checked;cursor_queries=$cursorQueries;unchanged_files=$unchanged;excluded_files=$excluded;session_roots_found=$roots.Count;discovery_checked=$discoveryChecked;discovery_incomplete=($queue.Count -gt 0);recovery_unverified=$scanState.recovery_unverified;initial_snapshots=$initialSnapshots;counter_resets=$counterResets;unmeasured_snapshots=$unmeasured;skipped=$skips}; evidence=$evidence} | ConvertTo-Json -Depth 20 -Compress
+    diagnostics=@{checked_files=$checked;cursor_queries=$cursorQueries;unchanged_files=$unchanged;excluded_files=$excluded;project_unresolved=@($projectUnresolved.ToArray());session_roots_found=$roots.Count;discovery_checked=$discoveryChecked;discovery_incomplete=($queue.Count -gt 0);recovery_unverified=$scanState.recovery_unverified;initial_snapshots=$initialSnapshots;counter_resets=$counterResets;unmeasured_snapshots=$unmeasured;skipped=$skips}; evidence=$evidence} | ConvertTo-Json -Depth 20 -Compress

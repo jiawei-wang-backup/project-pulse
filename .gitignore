@@ -7,3 +7,4 @@ node_modules/
 .pulse-state-*.json
 .pulse-state-*.json.tmp
 .pulse-pending/
+.pulse-project-paths.json

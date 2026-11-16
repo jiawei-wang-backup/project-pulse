@@ -25,7 +25,7 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
   const server=http.createServer(async(req,res)=>{
     const url=new URL(req.url,'http://local');
     let result;
-    if(url.pathname==='/api/v1/report-directory') result={protocol_version:3,members:[],repositories:[],sources:[...cursors].map(([source_id,c])=>({source_id,offset:c.offset}))};
+    if(url.pathname==='/api/v1/report-directory') result={protocol_version:3,capabilities:['project_mapping_backfill'],members:[],repositories:[],sources:[...cursors].map(([source_id,c])=>({source_id,offset:c.offset}))};
     else if(url.pathname==='/api/v1/report-cursor') result=cursors.get(url.searchParams.get('source_id')) ?? {offset:0,context:{},repositories:[]};
     else if(req.method==='POST') {
       const chunks=[]; for await(const chunk of req) chunks.push(chunk);
@@ -34,10 +34,12 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
       const previous=cursors.get(body.cursor.source_id);
       if(previous?.offset !== body.cursor.to_offset) {
         assert.equal(body.cursor.from_offset,previous?.offset ?? 0);
-        cursors.set(body.cursor.source_id,{offset:body.cursor.to_offset,context:body.cursor.context,repositories:[]});
+        cursors.set(body.cursor.source_id,{offset:body.cursor.to_offset,context:body.cursor.context,repositories:[],
+          session_exists:body.sessions.length>0,project_key:body.sessions[0]?.repository??'unresolved'});
         for(const row of body.usage) for(const key of Object.keys(totals)) totals[key]+=row[key] ?? 0;
         committed++;
       }
+      for(const mapping of body.mappings??[]) cursors.get(mapping.session_id).project_key=mapping.repository;
       const usage={events:body.usage.length};
       for(const key of Object.keys(totals)) usage[key]=String(body.usage.reduce((n,r)=>n+(r[key]??0),0));
       if(corruptReceipt) usage.input_tokens='999999';
@@ -48,10 +50,11 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
   await once(server,'listening');
   const origin=`http://${host}:${server.address().port}`;
   const windows=process.platform==='win32';
-  const invoke=async(action,work)=>{
+  const invoke=async(action,work,extra=[])=>{
     const script=resolve('ops/report',windows?'pulse-report.ps1':'pulse-report.pl');
     const args=windows?['-NoProfile','-ExecutionPolicy','Bypass','-File',script,'-Action',action,'-WorkDir',work,'-StateDir',state,'-Server',origin]
       :[script,'--action',action,'--work-dir',work,'--state-dir',state,'--server',origin];
+    args.push(...extra);
     const command=windows?'powershell.exe':process.platform==='linux'?'/bin/sh':'/usr/bin/perl';
     if(process.platform==='linux') args[0]=resolve('ops/report/pulse-report-linux.sh');
     const output=await run(command,args,{env:{...process.env,CODEX_HOME:activeHome,
@@ -139,6 +142,30 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
     const rediscovered=await invoke('Prepare',join(root,'rediscovered'));
     assert.ok(rediscovered.diagnostics.session_roots_found>=2);
     assert.equal(rediscovered.usage.events,0);
+    // Explicit old -> new workspace mapping repairs a session even with no new bytes.
+    const repoDir=join(root,'renamed-project');await mkdir(repoDir);
+    await run('git',['init',repoDir]);
+    await run('git',['-C',repoDir,'remote','add','origin','https://github.com/example/moved.git']);
+    const mappingFile=join(state,'.pulse-project-paths.json');
+    await writeFile(mappingFile,JSON.stringify([{old_path:root,new_path:repoDir}]));
+    const before={...totals};const oldOffset=cursors.get(source).offset;
+    const mappingWork=join(root,'mapping');
+    await invoke('Prepare',mappingWork,windows?['-ResolveGit']:['--resolve-git']);
+    const mappingPlan=JSON.parse(await readFile(join(mappingWork,'plan.json')));
+    assert.ok(mappingPlan.batches.some(b=>b.mappings?.some(m=>m.session_id===source && m.repository==='example/moved')));
+    await invoke('Submit',mappingWork);
+    assert.equal(cursors.get(source).project_key,'example/moved');
+    assert.equal(cursors.get(source).offset,oldOffset);
+    assert.deepEqual(totals,before);
+    // Saved, verified remote still works if neither old nor new directory exists.
+    await rm(repoDir,{recursive:true,force:true});
+    const cached=await invoke('Prepare',join(root,'mapping-cached'));
+    assert.ok(!cached.diagnostics.project_unresolved.some(x=>x.source_id===source));
+    await mkdir(repoDir);await run('git',['init',repoDir]);
+    await run('git',['-C',repoDir,'remote','add','origin','https://github.com/example/different.git']);
+    const conflict=await invoke('Prepare',join(root,'mapping-conflict'),windows?['-ResolveGit']:['--resolve-git']);
+    assert.ok(conflict.diagnostics.project_unresolved.some(x=>x.source_id===source && x.reason==='conflicting_repository_evidence'));
+    assert.equal(cursors.get(source).project_key,'example/moved');
   } finally {
     await new Promise(resolve=>server.close(resolve));
     await rm(root,{recursive:true,force:true});

@@ -12,14 +12,14 @@ use File::Path qw(make_path);
 use Cwd qw(abs_path);
 use Fcntl qw(O_WRONLY O_CREAT O_EXCL);
 
-my ($state_dir,$github_login,$resolve_git) = ($FindBin::Bin,undef,0);
+my ($state_dir,$github_login,$resolve_git,$project_map) = ($FindBin::Bin,undef,0,undef);
 my @session_roots;
 my ($action,$work,$server,$label,$exclude,$include,$tool) =
   ('Prepare',undef,'http://192.168.16.70:4185',undef,undef,0,'codex');
 GetOptions('action=s'=>\$action,'work-dir=s'=>\$work,'server=s'=>\$server,'label=s'=>\$label,
     'exclude-session-id=s'=>\$exclude,'include-evidence'=>\$include,'summarizer-tool=s'=>\$tool,
     'state-dir=s'=>\$state_dir,'github-login=s'=>\$github_login,'resolve-git'=>\$resolve_git,
-    'session-root=s@'=>\@session_roots) or die "Invalid options\n";
+    'session-root=s@'=>\@session_roots,'project-map=s'=>\$project_map) or die "Invalid options\n";
 die "Expected Prepare or Submit and --work-dir\n" unless $work && $action =~ /\A(?:Prepare|Submit)\z/;
 die "Invalid tool ID\n" unless $tool =~ /\A[a-z][a-z0-9_]{0,63}\z/;
 $server =~ s{/$}{};
@@ -104,6 +104,17 @@ sub usage_totals {
     for my $row (@$rows) { $totals{$_} += $row->{$_} // 0 for @counts }
     return \%totals;
 }
+sub repo_name {
+    my ($value)=@_;
+    my ($repo)=($value//'') =~ m{\A(?:https://github\.com/|git\@github\.com:|ssh://git\@(?:github\.com|ssh\.github\.com)(?::443)?/)([\w.-]+/[\w.-]+?)(?:\.git)?/?\z}i;
+    return defined $repo ? lc($repo) : undef;
+}
+sub path_key { my $v=$_[0]//''; $v=~s{\\}{/}g; $v=~s{/+\z}{}; return $v =~ /\A[A-Za-z]:/ ? lc $v : $v }
+sub git_repo {
+    my ($path)=@_;return undef unless $path && -d $path;
+    open my $git,'-|','git','-C',$path,'config','--local','--get','remote.origin.url' or return undef;
+    my $value=<$git>;close $git;chomp($value //= '');return repo_name($value);
+}
 sub narrative {
     my $text = $_[0] // '';
     $text =~ s{\x60\x60\x60.*?(?:\x60\x60\x60|\z)|https?://\S+|\S+\@\S+|(?:^|\s)[~/]\S+|(?:\b\S*(?:token|secret|password|api[_-]?key)\S*|\S{0,8}(?:\x{5bc6}\x{7801}|\x{53e3}\x{4ee4}|\x{4ee4}\x{724c}))\s*[:=\x{ff1a}]\s*\S+}{ [redacted] }gis;
@@ -177,6 +188,31 @@ $label //= $scan_state->{label};
 $scan_state->{label}=$label if defined $label;
 $github_login //= $scan_state->{github_login};
 $scan_state->{github_login}=$github_login if defined $github_login;
+$project_map //= "$state_dir/.pulse-project-paths.json";
+my $mappings=-f $project_map ? read_json($project_map) : [];
+die "Project map must be an array\n" unless ref($mappings) eq 'ARRAY';
+my %path_mappings;
+for my $mapping (@$mappings) {
+    die "Invalid project mapping\n" unless ref($mapping) eq 'HASH' && $mapping->{old_path} && $mapping->{new_path};
+    my $key=path_key($mapping->{old_path});
+    die "Duplicate project mapping\n" if exists $path_mappings{$key};
+    $path_mappings{$key}=$mapping->{new_path};
+}
+my @project_unresolved;
+sub resolve_project {
+    my ($payload,$source)=@_;
+    my $key=path_key($payload->{cwd});
+    my $original=repo_name($payload->{git}{repository_url});
+    my $cached=$scan_state->{workspace_repositories}{$key};
+    my $live=$resolve_git ? git_repo($path_mappings{$key}//$payload->{cwd}) : undef;
+    my %choices=map {$_=>1} grep {defined && length} ($original,$live,$cached);
+    if (keys(%choices)>1) {push @project_unresolved,{source_id=>$source,reason=>'conflicting_repository_evidence'};return $original}
+    my ($repo)=keys %choices;
+    if ($repo) {$scan_state->{workspace_repositories}{$key}=$repo if length $key;return $repo}
+    push @project_unresolved,{source_id=>$source,reason=>exists $path_mappings{$key} ? 'mapped_directory_has_no_verified_remote' :
+        $payload->{cwd} && -d $payload->{cwd} ? 'repository_not_identified' : 'workspace_moved_needs_mapping'};
+    return undef;
+}
 if ($scan_state->{pending_work} && -f "$scan_state->{pending_work}/plan.json") {
     open my $resume,'-|',$^X,$0,'--action','Submit','--work-dir',$scan_state->{pending_work},'--server',$server
         or die "Cannot resume pending upload\n";
@@ -269,7 +305,18 @@ for my $entry (@files) {
     my $cursor = cursor($source);
     $cursor_queries++;
     my $from = $cursor->{offset};
-    if ($size == $from) { $unchanged++; next }
+    my $resolved_repo=resolve_project($p,$source);
+    if ($size == $from) {
+        if ($resolved_repo && $cursor->{session_exists} && ($cursor->{project_key}//'') ne $resolved_repo) {
+            if (grep {$_ eq 'project_mapping_backfill'} @{$directory->{capabilities}//[]}) {
+                push @batches,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),collector_version=>'3.0.0',
+                    sessions=>[],agents=>[],summaries=>[],projects=>[],usage=>[],
+                    mappings=>[{session_id=>$source,repository=>$resolved_repo}],
+                    cursor=>{source_id=>$source,from_offset=>$from,to_offset=>$from,context=>$cursor->{context}}};
+            } else {push @project_unresolved,{source_id=>$source,reason=>'server_project_mapping_upgrade_required'}}
+        }
+        $unchanged++; next;
+    }
     if ($size < $from) { $skips{$checked}='file_truncated'; next }
     seek($fh,$from,0) or die "Cannot seek log\n";
     my $buffer = '';
@@ -345,14 +392,7 @@ for my $entry (@files) {
     if ($end == $from) { $skips{$checked} //= 'no_complete_line_within_budget'; next }
     my (@sessions,@agents);
     if ($activity) {
-        my $remote_url=$p->{git}{repository_url}//'';
-        if ($resolve_git && $p->{cwd} && -d $p->{cwd}) {
-            if (open my $git,'-|','/usr/bin/git','-C',$p->{cwd},'config','--local','--get','remote.origin.url') {
-                my $value=<$git>; close $git; chomp($value //= ''); $remote_url=$value if $value;
-            }
-        }
-        my ($remote) = $remote_url =~ m{\A(?:https://github\.com/|git\@github\.com:|ssh://git\@(?:github\.com|ssh\.github\.com)(?::443)?/)([\w.-]+/[\w.-]+?)(?:\.git)?/?\z}i;
-        my $repo=defined $remote ? lc($remote) : undef;
+        my $repo=$resolved_repo;
         my ($folder) = ($p->{cwd}//'') =~ m{([^/\\:]+)[/\\]*\z};
         $folder=undef if defined $folder && ($folder =~ /[\x00-\x1f]/ || length($folder)>120 || $folder =~ /\A\.{1,2}\z/);
         push @sessions,{session_id=>$source,tool=>'codex',revision=>$end,repository=>$repo,started_at=>undef,
@@ -371,6 +411,7 @@ for my $entry (@files) {
             context=>{model=>$model,report_from=>$source_cutoff,map { $_=>$context->{$_} } @counts}}};
 }
 my $diagnostics={checked_files=>$checked,cursor_queries=>$cursor_queries,unchanged_files=>$unchanged,excluded_files=>$excluded,
+    project_unresolved=>\@project_unresolved,
     session_roots_found=>scalar @roots,discovery_checked=>$discovery_checked,discovery_incomplete=>(@queue ? JSON::PP::true : JSON::PP::false),
     recovery_unverified=>$scan_state->{recovery_unverified}//JSON::PP::false,
     initial_snapshots=>$baseline_events,counter_resets=>$reset_events,unmeasured_snapshots=>$unmeasured,skipped=>\%skips};
