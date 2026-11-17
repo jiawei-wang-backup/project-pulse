@@ -29,6 +29,7 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
     const url=new URL(req.url,'http://local');
     let result;
     if(url.pathname==='/api/v1/report-directory') result={protocol_version:3,capabilities:['project_mapping_backfill','client_pr_ingest','client_project_status','multi_repository_projects'],members:[],repositories:[],sources:[...cursors].map(([source_id,c])=>({source_id,offset:c.offset}))};
+    else if(url.pathname==='/api/v1/report-inventory') result={project_key:url.searchParams.get('project_key'),sources:url.searchParams.getAll('source_id')};
     else if(url.pathname==='/api/v1/report-cursor') result=cursors.get(url.searchParams.get('source_id')) ?? {offset:0,context:{},repositories:[]};
     else if(req.method==='POST' && url.pathname==='/api/v1/report-statuses') {
       const chunks=[];for await(const chunk of req) chunks.push(chunk);
@@ -95,6 +96,9 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
     token(5,2,1,{input_tokens:5,cached_input_tokens:2,output_tokens:1}),token(5,2,1)];
   try {
     await writeFile(file,lines.map(JSON.stringify).join('\n')+'\n');
+    const inventoryArgs=windows?['-ProjectKey','本地项目','-OnlySource',source]:['--project-key','本地项目','--only-source',source];
+    assert.deepEqual(await invoke('Inventory',join(root,'inventory'),inventoryArgs),{project_key:'本地项目',sources:[source]});
+    assert.equal(committed,0);
     const work=join(root,'work1');
     const prepared=await invoke('Prepare',work);
     assert.equal(prepared.prepared_batches,1);

@@ -1,6 +1,6 @@
 # Project Pulse macOS / Windows / Linux 快速上报包
 
-版本以 `VERSION` 为准（当前 3.5.0），多仓库功能需要服务端011迁移及multi_repository_projects能力；需要服务端协议3、client_project_status能力，以及已应用009_project_lifecycle迁移。先阅读 `UPGRADE.md`，升级时保留隐藏状态和待续传目录。包内SHA256SUMS可核对完整性。
+版本以 `VERSION` 为准（当前 3.6.0），多仓库功能需要服务端011迁移及multi_repository_projects能力；需要服务端协议3、client_project_status能力，以及已应用009_project_lifecycle迁移。先阅读 `UPGRADE.md`，升级时保留隐藏状态和待续传目录。包内SHA256SUMS可核对完整性。
 
 这是客户端上报包。解压后不要移动包内文件，在 Codex 打开解压后的 `project-pulse-report` 目录，把 `PROMPT.txt` 全文发给 Codex。不要直接在 ZIP 预览里执行。
 
@@ -8,9 +8,9 @@
 
 服务端启用 `team_metadata_edit` 能力后，客户端也可修正全员的摘要、项目归属、目标、里程碑和状态，操作流程见包内 `team-edits.md`。先查询最新记录和version，明确目标成员与来源会话，再修改和核验回执；不能直接写数据库或凭空调整Token。
 
-**[下载最新上报 ZIP：project-pulse-report-3.5.0.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.5.0-20261117/project-pulse-report-3.5.0.zip)**
+**[下载最新上报 ZIP：project-pulse-report-3.6.0.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.6.0-20261117/project-pulse-report-3.6.0.zip)**
 
-本版3.5.0先盘点项目供用户选择，确认后仅上报所选项目并创建30分钟任务；详见 `project-selection.md`。保留全员数据修正说明及接口，启用步骤见 `team-edits.md`，服务端未启用时不能宣称可修改。继续保留宽松Agent识别：运行窗口2小时，补足消息／输出／工具／用量活动信号，明确结束仍退出。覆盖更新原永久目录后，重新发送下面提示词以更新原30分钟任务，不能只下载新包而继续运行旧目录。
+本版3.6.0先盘点项目供用户选择，确认后仅上报所选项目并创建30分钟任务；详见 `project-selection.md`。保留全员数据修正说明及接口，启用步骤见 `team-edits.md`，服务端未启用时不能宣称可修改。继续保留宽松Agent识别：运行窗口2小时，补足消息／输出／工具／用量活动信号，明确结束仍退出。覆盖更新原永久目录后，重新发送下面提示词以更新原30分钟任务，不能只下载新包而继续运行旧目录。
 
 解压到永久目录，用Codex打开本文件夹，复制下面整段发送；也可直接发送PROMPT.txt全文。不要仅打开ZIP预览。
 
@@ -22,6 +22,8 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，先�
 我授权你识别本机 Codex 主会话及相关项目、成员、GitHub仓库和PR、模型与真实Token用量，并生成脱敏摘要、项目目标和里程碑。先主动查找并复用已有信息，仍缺信息或证据冲突时，再集中询问我。排除当前上报会话，不编造数据。
 
 使用包内对应系统的固定脚本，向 http://192.168.16.70:4185 增量上报。一个所选业务项目可关联多个仓库：查证每个真实仓库及数字ID，按README写repositories.json；PR按实际仓库与编号提交，不伪造单仓库归属。先核对服务端multi_repository_projects能力。PR也要按README查证并结构化提交，分别核对日志、Token和PR回执。
+
+每轮先读私有项目选择，并用 Inventory 查询所选项目和本机已授权会话在面板上的已有信息与缺项，再开始准备上报。只补有证据的缺项和经确认的新信息。已有内容、项目归属或待发批次与本机证据冲突时，先列出差异询问用户，等待确认再处理冲突项。定时运行把问题留在结果里，继续同步范围内其余无冲突数据。提交后重新查询核对。
 
 每轮检查所选项目的功能模块。服务端支持 project_modules 时，根据项目 README、代码和已确认成果整理 1–12 项，每项写模块名称和一句职责介绍。首次缺失或有变化时提交完整 modules 清单，并核对项目报告是否显示。无新增日志时按项目报告补报流程提交，沿用原游标和计量上下文。证据不足或服务端尚未启用时，在结果里说明。
 
@@ -195,7 +197,7 @@ observed_at为本次有证据的判断时间，状态无变化时不反复提交
 
 - `PROMPT.txt` 明确要求先盘点并等待项目选择，确认后授权“所选项目试报”和“设置每30分钟定时任务”两个必做交付。试报成功后必须继续调用 Codex 桌面端定时任务工具（`automation_update`），不得再次询问是否设置，也不得在一次上传完成后结束。不能以有积压、无新增用量或沿用摘要为由跳过。定时运行本身只执行一轮上报，不重复创建任务。
 - 先查找本机同目录、同上报用途的已有任务，更新并启用；没有才创建。任务名为「Project Pulse 每30分钟上报」，每 30 分钟执行一次，工作目录必须是解压后的永久目录，不得使用临时目录或 ZIP 路径。
-- 定时任务正文（创建时将“本包永久目录”替换为实际绝对目录）：`PROJECT_PULSE_AUTOMATION。读取本包永久目录的VERSION和README.md，服务端为http://192.168.16.70:4185。由当前客户端Codex主动识别成员、项目、迁移目录、主会话、GitHub仓库与PR、模型、三类Token、摘要、目标及里程碑。先读取私有项目选择，仅对所选项目传OnlySource，空选择或损坏则停止；确认旧待发范围一致后恢复，复用已有证据与映射；使用固定脚本解析Token差分并提交，不能估算或重复累计。用已授权GitHub工具检查open／closed／merged／draft，将查证结果按README写入pulls.json并用Submit提交，即使无新增日志也要检查PR。核对日志committed、usage_verified、PR的pr_receipt及diagnostics，报告实际提交、覆盖范围、积压和无法计量项。先自行查找与判断，仅在仍缺少信息或证据冲突时在任务结果集中反问用户；不要阻塞其他可确认数据上报。项目状态由会话证据判断，on_track与blocked均为在研；不按时间超时，不把Agent任务结束当作项目完成。状态变化或首次补齐时写statuses.json并核对status_receipt，无证据则沿用上次状态。每轮检查所选项目的功能模块。服务端支持 project_modules 时，根据项目 README、代码和已确认成果整理 1–12 项，每项写模块名称和一句职责介绍。首次缺失或有变化时提交完整 modules 清单，并核对项目报告是否显示。无新增日志时按项目报告补报流程提交，沿用原游标和计量上下文。证据不足或服务端尚未启用时，在结果里说明。排除当前上报会话，不启动服务端，不重复创建任务。`
+- 定时任务正文（创建时将“本包永久目录”替换为实际绝对目录）：`PROJECT_PULSE_AUTOMATION。读取本包永久目录的VERSION和README.md，服务端为http://192.168.16.70:4185。由当前客户端Codex主动识别成员、项目、迁移目录、主会话、GitHub仓库与PR、模型、三类Token、摘要、目标及里程碑。先读取私有项目选择，仅对所选项目传OnlySource，空选择或损坏则停止。每轮先读私有项目选择，并用 Inventory 查询所选项目和本机已授权会话在面板上的已有信息与缺项，再开始准备上报。只补有证据的缺项和经确认的新信息。已有内容、项目归属或待发批次与本机证据冲突时，先列出差异询问用户，等待确认再处理冲突项。定时运行把问题留在结果里，继续同步范围内其余无冲突数据。提交后重新查询核对。确认待发请求的全部记录仍在授权范围且没有冲突后恢复，复用已有证据与映射；使用固定脚本解析Token差分并提交，不能估算或重复累计。用已授权GitHub工具检查open／closed／merged／draft，将查证结果按README写入pulls.json并用Submit提交，即使无新增日志也要检查PR。核对日志committed、usage_verified、PR的pr_receipt及diagnostics，报告实际提交、覆盖范围、积压和无法计量项。先自行查找与判断，仅在仍缺少信息或证据冲突时在任务结果集中反问用户；不要阻塞其他可确认数据上报。项目状态由会话证据判断，on_track与blocked均为在研；不按时间超时，不把Agent任务结束当作项目完成。状态变化或首次补齐时写statuses.json并核对status_receipt，无证据则沿用上次状态。每轮检查所选项目的功能模块。服务端支持 project_modules 时，根据项目 README、代码和已确认成果整理 1–12 项，每项写模块名称和一句职责介绍。首次缺失或有变化时提交完整 modules 清单，并核对项目报告是否显示。无新增日志时按项目报告补报流程提交，沿用原游标和计量上下文。证据不足或服务端尚未启用时，在结果里说明。排除当前上报会话，不启动服务端，不重复创建任务。`
 - 创建或更新后必须重新查询任务，确认名称、已启用、30 分钟间隔和工作目录。未实际查到任务时不得声称「已设置」。当前工具无定时任务能力时，必须明确回报「未设置」及原因。
 - Linux也遵守相同规则：只有当前执行工具实际提供定时任务能力才可设置；只有CLI而没有该能力时，完成可执行的上报并明确报告“定时任务未设置”，不擅自安装服务或写入cron。
 - 只有试报成功且重新查询确认定时任务已启用，才可报告整体完成。最终给出任务标识、实际计划规则及下次运行时间（工具未提供则如实说明）。试报失败或定时任务工具缺失／报错时报告“整体未完成”，列出失败步骤和具体错误。
@@ -203,3 +205,24 @@ observed_at为本次有证据的判断时间，状态无变化时不反复提交
 ## 项目功能模块
 
 服务端应用 `012_project_modules.sql` 并重启后，目录声明 `project_modules`。客户端从已选项目的 README、代码或会话证据归纳功能，随 `summaries.json` 的项目目标和里程碑提交可选的 `modules`，例如 `[{"name":"增量采集","description":"读取新增会话并计算 Token 差分。"}]`。支持 1–12 个模块，名称最多 48 字，描述最多 200 字。无新增日志时，按包内 lan-report.md 的等游标项目报告流程补报。复用上一版 goal 和 milestones，使用本次独立的 report_id 和 batch_id，同一次重试保持请求原样。提交后核对项目报告中的 modules。旧报告省略模块不会清除已上报列表。
+
+
+## 查询面板缺项
+
+项目选择完成后，及每次定时上报开始时，对每个已选项目调用 Inventory。项目键使用已核实的 GitHub owner/repo 或工作区名称，每次最多传 50 个本机已授权主会话 UUID。macOS 使用：
+
+```sh
+/usr/bin/perl ./pulse-report.pl --action Inventory --project-key owner/repo --only-source <UUID>
+```
+
+Linux 把命令入口换为 `sh ./pulse-report-linux.sh`。Windows 在 PowerShell 内运行：
+
+```powershell
+& .\pulse-report.ps1 -Action Inventory -ProjectKey 'owner/repo' -OnlySource @('<UUID>')
+```
+
+Inventory 是只读操作。它返回项目目标、里程碑、模块、状态、PR 总数及最近 50 条 PR，以及该设备匹配会话的摘要、状态和偏移。missing 是待核实的缺项。PR 数为零或列表截断时，仍通过真实仓库查证。conflicts 列出本机来源已登记的不同项目归属，相关来源暂停提交，等用户确认。unreported_source_ids 是该设备尚未上报的来源，继续处理经本机核实的新增会话。若 project 为 null，可先提交这些来源的正常日志批次，随后再查项目缺项。
+
+只补确有证据的缺项。已有字段冲突时，在本轮结果列出服务端现值、候选值和依据，请用户确认后再写入。提交前重查拟编辑的记录。恢复旧待发前也检查计划、PR 和状态请求是否仍在所选范围且无冲突。若存在冲突，保留原请求并暂停该待发队列，不改正文、不绕过队列。服务端尚无 report_inventory 或该查询失败时报告原因，暂停本轮写入，避免无基线覆盖已有内容。
+
+有游标但无新增日志时，可沿用 lan-report.md 的等游标补报协议补齐项目资料或缺失摘要。摘要补报使用 summaries 数组，关联原设备的原会话，使用新 summary_id 和 batch_id，保留原游标与 context，其他必填数组为空。服务端发现该摘要已存在则返回 409，重新读取以确认。用量始终由采集脚本按原游标差分。

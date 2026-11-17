@@ -16,16 +16,18 @@ use File::Spec;
 my ($state_dir,$github_login,$resolve_git,$project_map) = ($FindBin::Bin,undef,0,undef);
 my @session_roots;
 my @only_sources;
+my $project_key;
 my $max_line_bytes=32*1024*1024;
 my ($action,$work,$server,$label,$exclude,$include,$tool) =
   ('Prepare',undef,'http://192.168.16.70:4185',undef,undef,0,'codex');
 GetOptions('action=s'=>\$action,'work-dir=s'=>\$work,'server=s'=>\$server,'label=s'=>\$label,
     'exclude-session-id=s'=>\$exclude,'include-evidence'=>\$include,'summarizer-tool=s'=>\$tool,
     'state-dir=s'=>\$state_dir,'github-login=s'=>\$github_login,'resolve-git'=>\$resolve_git,
-    'session-root=s@'=>\@session_roots,'project-map=s'=>\$project_map,'only-source=s@'=>\@only_sources,'max-line-bytes=i'=>\$max_line_bytes) or die "Invalid options\n";
+    'session-root=s@'=>\@session_roots,'project-map=s'=>\$project_map,'only-source=s@'=>\@only_sources,'project-key=s'=>\$project_key,'max-line-bytes=i'=>\$max_line_bytes) or die "Invalid options\n";
 die "MaxLineBytes must be between 1 MiB and 256 MiB\n" unless $max_line_bytes>=1048576 && $max_line_bytes<=268435456;
-die "Expected Prepare or Submit and --work-dir\n" unless $work && $action =~ /\A(?:Prepare|Submit)\z/;
-$work=abs_path($work) // File::Spec->rel2abs($work);
+die "Expected Inventory, Prepare, or Submit\n" unless $action =~ /\A(?:Inventory|Prepare|Submit)\z/;
+die "Prepare and Submit require --work-dir\n" unless $work || $action eq 'Inventory';
+$work=abs_path($work) // File::Spec->rel2abs($work) if defined $work;
 $state_dir=File::Spec->rel2abs($state_dir);
 die "Invalid tool ID\n" unless $tool =~ /\A[a-z][a-z0-9_]{0,63}\z/;
 $server =~ s{/$}{};
@@ -58,7 +60,7 @@ if ($^O eq 'darwin') {
     }
 } else {die "Unsupported platform: $^O\n"}
 my $device = sha256_hex("$machine\n$<");
-my $plan_file = "$work/plan.json";
+my $plan_file = defined $work ? "$work/plan.json" : undef;
 my @counts = qw(input_tokens cached_input_tokens output_tokens);
 
 sub now { strftime('%Y-%m-%dT%H:%M:%SZ',gmtime($_[0] // time())) }
@@ -102,6 +104,15 @@ sub request {
     my $output = do { local $/; <$pipe> };
     close $pipe or die "Request failed: $route\n";
     return $json->decode($output);
+}
+if ($action eq 'Inventory') {
+    die "Inventory requires --project-key and 1 to 50 valid --only-source IDs\n"
+        unless defined $project_key && length($project_key) && @only_sources && @only_sources<=50 && !grep {$_ !~ $uuid} @only_sources;
+    utf8::encode($project_key) if utf8::is_utf8($project_key);
+    $project_key =~ s/([^A-Za-z0-9_.~-])/sprintf("%%%02X",ord($1))/ge;
+    my $route='/api/v1/report-inventory?project_key='.$project_key.join('',map {"&source_id=$_"} @only_sources);
+    print $json->encode(request($route)),"\n";
+    exit;
 }
 sub cursor { request("/api/v1/report-cursor?source_id=$_[0]") }
 sub usage_totals {
@@ -180,13 +191,13 @@ if ($action eq 'Submit') {
         my $project = $session ? ($session->{repository} // $session->{workspace_name}) : undef;
         if ($session && $edit->{summary}) {
             $batch->{summaries} = [{summary_id=>id("codex:summary:$source:$end"),session_id=>$source,
-                observed_at=>$session->{last_activity_at},summary=>$edit->{summary},summarizer_tool=>$tool,prompt_version=>'3.5.0'}];
+                observed_at=>$session->{last_activity_at},summary=>$edit->{summary},summarizer_tool=>$tool,prompt_version=>'3.6.0'}];
         }
         if ($project && $edit->{goal} && $edit->{milestones}) {
             $batch->{projects} = [{report_id=>id("codex:project:$source:$end:$project"),source_session_id=>$source,
                 project_key=>$project,goal=>$edit->{goal},milestones=>$edit->{milestones},
                 exists($edit->{modules}) ? (modules=>$edit->{modules}) : (),
-                observed_at=>$session->{last_activity_at},summarizer_tool=>$tool,prompt_version=>'3.5.0'}];
+                observed_at=>$session->{last_activity_at},summarizer_tool=>$tool,prompt_version=>'3.6.0'}];
         }
         my $body = "$work/$batch->{batch_id}.json";
         write_json($body,$batch) unless -e $body;
@@ -386,7 +397,7 @@ for my $entry (@files) {
         }
         if ($resolved_repo && $cursor->{session_exists} && ($cursor->{project_key}//'') ne $resolved_repo) {
             if (grep {$_ eq 'project_mapping_backfill'} @{$directory->{capabilities}//[]}) {
-                push @batches,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),collector_version=>'3.5.0',
+                push @batches,{schema_version=>1,batch_id=>uuid4(),sent_at=>now(),collector_version=>'3.6.0',
                     sessions=>[],agents=>[],summaries=>[],projects=>[],usage=>[],
                     mappings=>[{session_id=>$source,repository=>$resolved_repo}],
                     cursor=>{source_id=>$source,from_offset=>$from,to_offset=>$from,context=>$cursor->{context}}};
@@ -490,7 +501,7 @@ for my $entry (@files) {
         }
     }
     my $batch_id = uuid4();
-    push @batches,{schema_version=>1,batch_id=>$batch_id,sent_at=>now(),collector_version=>'3.5.0',
+    push @batches,{schema_version=>1,batch_id=>$batch_id,sent_at=>now(),collector_version=>'3.6.0',
         sessions=>\@sessions,agents=>\@agents,summaries=>[],projects=>[],usage=>\@usage,
         cursor=>{source_id=>$source,from_offset=>$from,to_offset=>$end,
             context=>{model=>$model,report_from=>$source_cutoff,map { $_=>$context->{$_} } @counts}}};
@@ -504,7 +515,7 @@ $scan_state->{next_index}=($scan_state->{next_index}//0)+$checked;
 $scan_state->{pending_work}=$work if @batches;
 write_json($plan_file,{batches=>\@batches,allowed_sources=>\@only_sources,bytes_read=>$bytes,backlog=>$backlog,label=>$label,github_login=>$github_login});
 write_json("$state_file.tmp",$scan_state); rename "$state_file.tmp",$state_file or die "Cannot persist scan progress\n";
-print $json->encode({collector_version=>'3.5.0',server=>$server,prepared_batches=>scalar @batches,usage=>usage_totals([map {@{$_->{usage}}} @batches]),
+print $json->encode({collector_version=>'3.6.0',server=>$server,prepared_batches=>scalar @batches,usage=>usage_totals([map {@{$_->{usage}}} @batches]),
     bytes_read=>$bytes,backlog=>$backlog,diagnostics=>$diagnostics,evidence=>\@evidence}),"\n";
 sub min { $_[0]<$_[1] ? $_[0] : $_[1] }
 sub read_segment {

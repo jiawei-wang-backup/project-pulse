@@ -32,9 +32,10 @@ function validate(report) {
         !Number.isSafeInteger(cursor.to_offset) || cursor.from_offset < 0 ||
         cursor.to_offset < cursor.from_offset) fail(422,'invalid_cursor');
     if (cursor.to_offset === cursor.from_offset && (
-      cursor.from_offset === 0 || (!report.projects?.length && !report.mappings?.length) ||
-      arrays.some(key => !['projects','mappings'].includes(key) && report[key].length) ||
+      cursor.from_offset === 0 || (!report.projects?.length && !report.mappings?.length && !report.summaries.length) ||
+      arrays.some(key => !['projects','mappings','summaries'].includes(key) && report[key].length) ||
       (report.projects || []).some(row => row?.source_session_id !== cursor.source_id) ||
+      report.summaries.some(row => row?.session_id !== cursor.source_id) ||
       (report.mappings || []).some(row => row?.session_id !== cursor.source_id)
     )) fail(422,'invalid_project_backfill');
     keys(cursor.context,'model input_tokens cached_input_tokens output_tokens' + (Object.hasOwn(cursor.context,'report_from') ? ' report_from' : ''));
@@ -205,6 +206,10 @@ export async function ingest(pool, token, raw, lan = null) {
         const previous = await client.query('SELECT byte_offset FROM report_cursors WHERE device_id=$1 AND source_id=$2',
           [device_id,cursor.source_id]);
         if (BigInt(previous.rows[0]?.byte_offset ?? 0) !== BigInt(cursor.from_offset)) fail(409,'cursor_conflict');
+        if (cursor.to_offset === cursor.from_offset && report.summaries.length) {
+          const existing=await client.query('SELECT 1 FROM session_summaries WHERE device_id=$1 AND session_id=$2 LIMIT 1',[device_id,cursor.source_id]);
+          if (existing.rowCount || report.summaries.length!==1) fail(409,'summary_already_present');
+        }
         if (cursor.to_offset > cursor.from_offset) await client.query(`INSERT INTO report_cursors(device_id,source_id,byte_offset,context) VALUES ($1,$2,$3,$4)
           ON CONFLICT(device_id,source_id) DO UPDATE SET byte_offset=EXCLUDED.byte_offset,context=EXCLUDED.context`,
           [device_id,cursor.source_id,cursor.to_offset,cursor.context]);
@@ -518,6 +523,65 @@ async function reportCursor(pool, token, sourceId, lan = null) {
   return {source_id:sourceId,offset:Number(byte_offset ?? 0),context,repositories,project_report:report,latest_summary,agent_state,project_key,session_exists,project_status};
 }
 
+// The device and explicit source IDs scope the lookup before any shared project data is read.
+async function reportInventory(pool, token, lan, params) {
+  if (!token && !lan) fail(401,'invalid_device');
+  const key=params.get('project_key')?.trim();
+  const ids=params.getAll('source_id');
+  if (!key || key.length>120 || /[\x00-\x1f]/.test(key) || !ids.length || ids.length>50 ||
+      ids.some(id=>!uuid.test(id))) fail(422,'invalid_inventory_scope');
+  const identity=await pool.query('SELECT device_id,revoked_at FROM devices WHERE credential_digest=$1',[digest(lan?.credential ?? token)]);
+  const device=identity.rows[0];
+  if (device?.revoked_at || (!device && !lan)) fail(401,'invalid_device');
+  const sources=await pool.query(`SELECT s.session_id AS source_id,coalesce(r.full_name,s.workspace_name) AS project_key,
+      s.repository_id,coalesce(c.byte_offset,0)::text AS offset,x.summary,
+      s.project_state AS state,s.reason_code,s.observed_at,s.project_evidence AS evidence
+    FROM sessions s LEFT JOIN repositories r USING(repository_id)
+    LEFT JOIN report_cursors c ON c.device_id=s.device_id AND c.source_id=s.session_id
+    LEFT JOIN LATERAL (SELECT summary FROM session_summaries x WHERE x.device_id=s.device_id AND x.session_id=s.session_id
+      ORDER BY observed_at DESC,summary_id LIMIT 1) x ON true
+    WHERE s.device_id=$1 AND s.session_id=ANY($2::uuid[])`,[device?.device_id ?? null,ids]);
+  const matches=sources.rows.filter(row=>row.project_key?.toLowerCase()===key.toLowerCase());
+  const conflicts=sources.rows.filter(row=>row.project_key?.toLowerCase()!==key.toLowerCase())
+    .map(({source_id,project_key})=>({source_id,project_key}));
+  const known=new Set(sources.rows.map(row=>row.source_id));
+  const unreported_source_ids=[...new Set(ids.map(id=>id.toLowerCase()))].filter(id=>!known.has(id));
+  if (!matches.length) return {project:null,sessions:[],conflicts,unreported_source_ids};
+  const repositoryId=matches[0].repository_id;
+  const canonical=matches[0].project_key;
+  const [reports, statuses, pulls]=await Promise.all([
+    pool.query(`SELECT goal,milestones,modules,observed_at FROM project_reports
+      WHERE lower(project_key)=lower($1) AND ($2::uuid IS NOT NULL OR device_id=$3)
+      ORDER BY observed_at DESC,report_id DESC LIMIT 1`,[canonical,repositoryId,device.device_id]),
+    pool.query(`SELECT CASE WHEN r.completed_at IS NOT NULL THEN 'completed' ELSE s.project_state END AS state,
+        s.reason_code,s.observed_at,s.project_evidence AS evidence
+      FROM sessions s LEFT JOIN repositories r USING(repository_id)
+      WHERE (s.observed_at IS NOT NULL OR r.completed_at IS NOT NULL)
+        AND (s.repository_id=$1 OR ($1::uuid IS NULL AND s.device_id=$2 AND s.repository_id IS NULL AND lower(s.workspace_name)=lower($3)))
+      ORDER BY s.observed_at DESC NULLS LAST,s.session_id LIMIT 1`,[repositoryId,device.device_id,canonical]),
+    pool.query(`SELECT r.full_name AS repository,p.number,p.url,p.state,p.is_draft,p.updated_at,count(*) OVER()::int AS total
+      FROM business_project_repositories l JOIN pull_requests p USING(repository_id) JOIN repositories r USING(repository_id)
+      WHERE l.project_repository_id=$1 ORDER BY p.updated_at DESC,p.repository_id,p.number LIMIT 50`,[repositoryId])
+  ]);
+  const report=reports.rows[0] ?? {};
+  if (report.goal && !report.modules) {
+    const inherited=await pool.query(`SELECT modules FROM project_reports WHERE lower(project_key)=lower($1)
+      AND ($2::uuid IS NOT NULL OR device_id=$3) AND modules IS NOT NULL
+      ORDER BY observed_at DESC,report_id DESC LIMIT 1`,[canonical,repositoryId,device.device_id]);
+    report.modules=inherited.rows[0]?.modules ?? null;
+  }
+  const status=statuses.rows[0] ?? null;
+  const pull_count=pulls.rows[0]?.total ?? 0;
+  return {
+    project:{project_key:canonical,goal:report.goal??null,milestones:report.milestones??null,modules:report.modules??null,status,
+      pull_count,pulls:pulls.rows.map(({total,...pull})=>pull),
+      missing:[!report.goal&&'goal',!report.milestones?.length&&'milestones',!report.modules?.length&&'modules',
+        (!status?.state || status.state==='unknown')&&'status',!pull_count&&'pulls'].filter(Boolean)},
+    sessions:matches.map(({repository_id,...row})=>({...row,offset:Number(row.offset),missing:row.summary ? [] : ['summary']})),
+    conflicts,unreported_source_ids
+  };
+}
+
 async function reportDirectory(pool, lan) {
   const [members, repositories, current, sources, projectRepositories] = await Promise.all([
     pool.query(`SELECT d.display_name,g.github_login,
@@ -540,8 +604,8 @@ async function reportDirectory(pool, lan) {
       JOIN repositories r ON r.repository_id=l.repository_id ORDER BY project.full_name,r.full_name`)
   ]);
   if (current.rows[0]?.revoked_at) fail(401,'invalid_device');
-  return {protocol_version:3, recommended_collector_version:'3.5.0',
-    capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill','client_pr_ingest','client_project_status','multi_repository_projects','project_modules',
+  return {protocol_version:3, recommended_collector_version:'3.6.0',
+    capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill','client_pr_ingest','client_project_status','multi_repository_projects','project_modules','report_inventory',
       ...(process.env.PULSE_TEAM_EDITS==='1' ? ['team_metadata_edit'] : [])],sources:sources.rows,
     members:members.rows,repositories:repositories.rows,project_repositories:projectRepositories.rows,
     current_display_name:current.rows[0]?.display_name ?? null};
@@ -587,6 +651,9 @@ export function createApi({localView = false, lanEnrollment = false} = {}) {
         } else if (req.method==='GET' && url.pathname==='/api/v1/report-directory' && lanEnrollment) {
           if (!lan) fail(401,'invalid_lan_device');
           data = await reportDirectory(pool,lan);
+        } else if (req.method==='GET' && url.pathname==='/api/v1/report-inventory') {
+          res.setHeader('Cache-Control','no-store');
+          data=await reportInventory(pool,token,lan,url.searchParams);
         } else if (req.method==='GET' && url.pathname==='/api/v1/report-cursor') {
           res.setHeader('Cache-Control','no-store');
           data = await reportCursor(pool,token,url.searchParams.get('source_id'),lan);

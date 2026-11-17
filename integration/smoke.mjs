@@ -143,6 +143,39 @@ try {
   assert.equal((await readCursor()).project_report.modules[0].name,'增量采集');
   const moduleDashboard=await (await fetch(base+'/api/v1/dashboard')).json();
   assert.equal(moduleDashboard.project_reports.find(p=>p.project_key==='example/pulse').modules[0].name,'增量采集');
+  const missingSource=randomUUID();
+  const newSession={...direct,batch_id:randomUUID(),cursor:{...direct.cursor,source_id:missingSource},
+    sessions:[{...valid.sessions[0],session_id:missingSource}]};
+  assert.equal((await sendDirect(newSession)).status,'committed');
+  const inventory='/api/v1/report-inventory?project_key=example%2Fpulse&source_id=';
+  const unknownSource=randomUUID();
+  const inventorySnapshot=await curl(authHeader,base+inventory+missingSource+'&source_id='+unknownSource);
+  assert.deepEqual(inventorySnapshot.unreported_source_ids,[unknownSource]);
+  assert.deepEqual(inventorySnapshot.sessions.map(row=>row.source_id),[missingSource]);
+  assert.deepEqual(inventorySnapshot.sessions[0].missing,['summary']);
+  assert.equal(inventorySnapshot.project.modules[0].name,'增量采集');
+  assert.ok(inventorySnapshot.project.missing.includes('pulls'));
+  assert.deepEqual((await curl(authHeader,base+inventory+unknownSource)).project,null);
+  assert.equal((await curl('',base+inventory+missingSource)).error,'invalid_device');
+  const otherToken=randomUUID(),otherDevice=randomUUID();
+  await pool.query('INSERT INTO devices(device_id,developer_id,credential_digest) VALUES ($1,$2,$3)',
+    [otherDevice,developer,createHash('sha256').update(otherToken).digest()]);
+  const otherView=await curl('Authorization: Bearer '+otherToken,base+inventory+missingSource);
+  assert.equal(otherView.project,null);
+  assert.deepEqual(otherView.sessions,[]);
+  await pool.query('DELETE FROM devices WHERE device_id=$1',[otherDevice]);
+
+  const conflict=await curl(authHeader,base+'/api/v1/report-inventory?project_key=other%2Frepo&source_id='+missingSource);
+  assert.equal(conflict.project,null);
+  assert.deepEqual(conflict.conflicts,[{source_id:missingSource,project_key:'example/pulse'}]);
+  const summaryOnly={...newSession,batch_id:randomUUID(),sessions:[],cursor:{...newSession.cursor,from_offset:250},
+    summaries:[{...valid.summaries[0],summary_id:randomUUID(),session_id:missingSource}]};
+  const summaryReceipt=await sendDirect(summaryOnly);
+  assert.equal(summaryReceipt.to_offset,250);
+  assert.equal(summaryReceipt.usage.events,0);
+  assert.deepEqual(await sendDirect(summaryOnly),summaryReceipt);
+  assert.equal((await sendDirect({...summaryOnly,batch_id:randomUUID()})).error,'summary_already_present');
+  assert.deepEqual((await curl(authHeader,base+inventory+missingSource)).sessions[0].missing,[]);
   const next={...direct,batch_id:randomUUID(),cursor:{...direct.cursor,from_offset:250,to_offset:300},
     sessions:[{...valid.sessions[0],revision:300,project_observation:null}]};
   assert.equal((await sendDirect(next)).to_offset,300);

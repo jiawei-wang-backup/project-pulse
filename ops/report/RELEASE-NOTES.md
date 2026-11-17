@@ -1,5 +1,9 @@
 Project Pulse 跨平台上报包（macOS / Windows / Linux）。
 
+3.6.0 先查询再补报
+
+更新服务端并重启以启用 report_inventory。已有 012 迁移的数据库可直接使用。更新 ZIP 并更新原有 30 分钟任务模板。
+
 3.5.0 项目功能模块
 
 服务端应用 012_project_modules.sql 并重启，目录声明 project_modules。覆盖客户端原目录并更新已有任务提示词。首次发现或模块变化时上报名称与职责，旧客户端省略字段时保留已上报清单。
