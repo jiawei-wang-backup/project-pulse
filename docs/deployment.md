@@ -18,7 +18,8 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f db/008_project_key_case.sql \
   -f db/009_project_lifecycle.sql \
   -f db/010_team_edits.sql \
-  -f db/011_project_repositories.sql
+  -f db/011_project_repositories.sql \
+  -f db/012_project_modules.sql
 ```
 
 已有库只执行尚未应用的迁移。通过部署环境提供DATABASE_URL，启动完整局域网看板：

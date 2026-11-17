@@ -49,6 +49,7 @@
 - `project_key` 用登记仓库列表中的原样 `owner/repo`（匹配时忽略大小写）；仓库未登记时，用与会话 `workspace_name` 完全相同的名称，例如 `watchops`。“整理文件”等工作区也适用。用同一设备该项目的一条已上报或同批上报的会话作为 `source_session_id`。无可关联的会话时先查找已授权的项目日志。
 - 从本批脱敏会话证据判断项目目标。一并核对已经存在的报告，可在授权项目目录内限量读取 README、计划和近期 Git 记录。目标写一句话。里程碑列出 1–12 个具体交付项，每项包含 `title`、`state`、`evidence`。有实现和验证依据时填 `completed`，待验证或仍在计划中的项填 `pending` 并写清还差什么。证据不足时，给出一条贴合项目的待核实项并注明缺少的证据。禁止编造完成项、百分比或日期。
 - 已上报过会话但缺里程碑时，从现有会话末尾至多读取 64 KiB 的相关历史作为补报证据。使用主会话 UUID 请求游标。若偏移大于零，提交 `from_offset = to_offset = 当前偏移`，原样带回 `context`，仅填 `projects`，其余必填数组为空。用新的 batch_id，`report_id` 按 `<来源>:project-backfill:<source_id>:<offset>:<项目键>` 派生。observed_at 用本次实际观察的 UTC 时间。同一报告重发保持原请求正文。此操作不改变游标或用量。遇到游标冲突先重查；已存在报告且无更新时结束。
+- 补报功能模块也使用上述等游标请求。仅在服务端声明 project_modules 后，在项目报告中加入 modules 数组，每项包含 name 与 description。沿用现有 goal 和 milestones，使用新 report_id 与 batch_id，重试保留同一正文。
 - 输出项目名、提交结果和里程碑数量。无法补报时说明缺哪项证据或缺哪个已上报的会话。
 
 ## 构造并提交 JSON

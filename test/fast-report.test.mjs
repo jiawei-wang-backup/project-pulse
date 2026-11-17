@@ -21,6 +21,7 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
   await mkdir(join(root,'home'));
   let activeHome=join(root,'codex');
   const cursors=new Map(); let committed=0; let rejectNext=false; let corruptReceipt=false;
+  const projectReports=[];
   const totals={input_tokens:0,cached_input_tokens:0,output_tokens:0};
   const prBatches=new Map();
   const statusBatches=new Map();
@@ -52,6 +53,7 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
       const chunks=[]; for await(const chunk of req) chunks.push(chunk);
       const body=JSON.parse(Buffer.concat(chunks));
       if(rejectNext) {rejectNext=false;res.writeHead(503).end();return;}
+      projectReports.push(...body.projects);
       const previous=cursors.get(body.cursor.source_id);
       if(previous?.offset !== body.cursor.to_offset) {
         assert.equal(body.cursor.from_offset,previous?.offset ?? 0);
@@ -103,6 +105,8 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
     const outside=windows?['-OnlySource',randomUUID()]:['--only-source',randomUUID()];
     await assert.rejects(invoke('Submit',work,outside),/outside selected project scope/);
     assert.equal(committed,0);
+    const modules=[{name:'增量采集',description:'计算会话用量差分'}];
+    await writeFile(join(work,'summaries.json'),JSON.stringify([{source_id:source,goal:'上报用量',milestones:[{title:'采集',state:'completed',evidence:'测试通过'}],modules}]));
     rejectNext=true;
     await assert.rejects(invoke('Submit',work));
     await assert.rejects(invoke('Prepare',join(root,'outside-pending'),outside),/outside selected project scope/);
@@ -110,6 +114,7 @@ test('portable collector: long metadata, baseline/reset, retry, stale backlog, e
     // Prepare automatically retries the saved immutable request before scanning.
     await invoke('Prepare',join(root,'retry'));
     assert.deepEqual(totals,{input_tokens:125,cached_input_tokens:52,output_tokens:13});
+    assert.deepEqual(projectReports[0].modules,modules);
     assert.equal(committed,1);
     await invoke('Submit',work);
     assert.equal(committed,1);

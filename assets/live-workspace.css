@@ -212,3 +212,9 @@
 
 .allocation-grid a.allocation-item{display:block;border-radius:4px}
 .allocation-grid a.allocation-item:focus-visible{outline:2px solid var(--lime);outline-offset:5px}
+
+.live-module-grid{list-style:none;margin:0;padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr));gap:12px}
+.live-module-grid li{border:1px solid rgba(127,137,150,.2);border-radius:12px;padding:16px}
+.live-module-grid h3{margin:0 0 7px;font-size:15px}
+.live-module-grid p{margin:0;font-size:13px;line-height:1.6;opacity:.75;overflow-wrap:anywhere}
+.live-module-source{font-size:12px;opacity:.72}

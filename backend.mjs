@@ -59,12 +59,23 @@ function validate(report) {
   const version = value => typeof value === 'string' && /^\d+\.\d+\.\d+$/.test(value) && value.length <= 32;
   if (!timestamp(report.sent_at) || !version(report.collector_version)) fail(422, 'invalid_metadata');
   for (const row of report.projects || []) {
-    keys(row,'report_id source_session_id project_key goal milestones observed_at summarizer_tool prompt_version');
+    keys(row,'report_id source_session_id project_key goal milestones observed_at summarizer_tool prompt_version'+(Object.hasOwn(row ?? {},'modules') ? ' modules' : ''));
     if (!uuid.test(row.report_id) || !uuid.test(row.source_session_id) || !timestamp(row.observed_at) ||
         !toolId(row.summarizer_tool) || !version(row.prompt_version) ||
         typeof row.project_key!=='string' || !/^(?:[\w.-]+\/[\w.-]+|[^\\/:\x00-\x1f\x7f]{1,120})$/.test(row.project_key) ||
         !safeNarrative(row.goal,200) ||
         !Array.isArray(row.milestones) || row.milestones.length<1 || row.milestones.length>12) fail(422,'invalid_project_report');
+    if (Object.hasOwn(row,'modules')) {
+      if (!Array.isArray(row.modules) || !row.modules.length || row.modules.length>12) fail(422,'invalid_project_modules');
+      const names=new Set();
+      for (const module of row.modules) {
+        keys(module,'name description');
+        if (!safeNarrative(module.name,48) || !safeNarrative(module.description,200)) fail(422,'invalid_project_module');
+        const name=module.name.trim().toLowerCase();
+        if (names.has(name)) fail(422,'duplicate_project_module');
+        names.add(name);
+      }
+    }
     for(const milestone of row.milestones) {
       keys(milestone,'title state evidence');
       if(!safeNarrative(milestone.title,120) || !['completed','pending'].includes(milestone.state) ||
@@ -225,7 +236,8 @@ export async function ingest(pool, token, raw, lan = null) {
       for (const row of report.projects || []) {
         const repo=await client.query("SELECT full_name FROM repositories WHERE lower(github_host)='github.com' AND lower(full_name)=lower($1)",[row.project_key]);
         await upsert(client,'project_reports',['device_id','report_id'],{
-          device_id,...row,project_key:repo.rows[0]?.full_name ?? row.project_key,milestones:JSON.stringify(row.milestones)
+          device_id,...row,project_key:repo.rows[0]?.full_name ?? row.project_key,milestones:JSON.stringify(row.milestones),
+          ...(row.modules ? {modules:JSON.stringify(row.modules)} : {})
         });
       }
       for (const row of report.usage) await upsert(client,'usage_events',['device_id','event_id'],{device_id,...row});
@@ -437,7 +449,9 @@ export async function dashboard(pool, days, now = Date.now()) {
       FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1 AND u.occurred_at <= $2
       GROUP BY day ORDER BY day`,[cutoff,end]],
     [`SELECT DISTINCT ON (lower(p.project_key)) coalesce(r.full_name,p.project_key) AS project_key,
-        p.goal,p.milestones,p.observed_at,p.summarizer_tool
+        p.goal,p.milestones,p.observed_at,p.summarizer_tool,
+        (SELECT m.modules FROM project_reports m WHERE lower(m.project_key)=lower(p.project_key) AND m.modules IS NOT NULL
+          ORDER BY m.observed_at DESC,m.report_id DESC LIMIT 1) AS modules
       FROM project_reports p
       LEFT JOIN repositories r ON lower(r.github_host)='github.com' AND lower(r.full_name)=lower(p.project_key)
       ORDER BY lower(p.project_key),p.observed_at DESC,p.report_id DESC`,[]],
@@ -490,7 +504,9 @@ async function reportCursor(pool, token, sourceId, lan = null) {
     ) summary ON true
     LEFT JOIN agents agent ON agent.device_id=d.device_id AND agent.session_id=$2 AND agent.kind='main'
     LEFT JOIN LATERAL (
-      SELECT jsonb_build_object('goal',p.goal,'milestones',p.milestones,'observed_at',p.observed_at) AS report
+      SELECT jsonb_build_object('goal',p.goal,'milestones',p.milestones,'observed_at',p.observed_at,
+        'modules',(SELECT m.modules FROM project_reports m WHERE lower(m.project_key)=lower(p.project_key) AND m.modules IS NOT NULL
+          ORDER BY m.observed_at DESC,m.report_id DESC LIMIT 1)) AS report
       FROM project_reports p WHERE p.device_id=d.device_id
         AND p.project_key=coalesce(r.full_name,s.workspace_name)
       ORDER BY p.observed_at DESC,p.report_id DESC LIMIT 1
@@ -524,8 +540,8 @@ async function reportDirectory(pool, lan) {
       JOIN repositories r ON r.repository_id=l.repository_id ORDER BY project.full_name,r.full_name`)
   ]);
   if (current.rows[0]?.revoked_at) fail(401,'invalid_device');
-  return {protocol_version:3, recommended_collector_version:'3.4.0',
-    capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill','client_pr_ingest','client_project_status','multi_repository_projects',
+  return {protocol_version:3, recommended_collector_version:'3.5.0',
+    capabilities:['usage_receipt','persistent_report_from','project_mapping_backfill','client_pr_ingest','client_project_status','multi_repository_projects','project_modules',
       ...(process.env.PULSE_TEAM_EDITS==='1' ? ['team_metadata_edit'] : [])],sources:sources.rows,
     members:members.rows,repositories:repositories.rows,project_repositories:projectRepositories.rows,
     current_display_name:current.rows[0]?.display_name ?? null};

@@ -318,6 +318,21 @@ function overview() {
     ${analytics()}${allocationPanel()}${activityPanel()}
     ${section(`${icon('chart')}模型消耗`,modelRows())}${deferredPanels}`;
 }
+const pulseModules = [
+  {name:'客户端采集与上报',description:'从授权的 Codex 会话增量采集工作摘要、模型用量和 Token，并核对服务端回执。'},
+  {name:'项目进度与里程碑',description:'汇总项目目标、已完成与待完成事项，以及在研、阻塞等状态。'},
+  {name:'团队与 Agent 活动',description:'查看成员参与的项目、近期会话和正在运行的 Agent。'},
+  {name:'GitHub 仓库与 PR',description:'一个项目可关联多个仓库，PR 按真实仓库归档并可跳转 GitHub。'},
+  {name:'用量统计',description:'按时间、模型和项目查看输入、缓存输入及输出 Token。'},
+  {name:'团队数据修正',description:'服务端启用后，登记设备可修正摘要、项目归属和进度，并保留审计记录。'}
+];
+function projectModules(key) {
+  const reported=reportFor(key)?.modules;
+  const modules=reported?.length ? reported : key.toLowerCase()==='jiawei-wang-dev/project-pulse' ? pulseModules : [];
+  const cards=modules.map(({name,description})=>`<li><h3>${esc(name)}</h3><p>${esc(description)}</p></li>`).join('');
+  const source=modules.length ? `<span class="live-module-source">${reported?.length ? '项目上报' : '仓库功能说明'} · ${modules.length} 个模块</span>` : '';
+  return section(`${icon('layers')}功能模块`,cards ? `<ul class="live-module-grid">${cards}</ul>` : empty('暂无模块介绍，客户端上报后在此展示'),source);
+}
 function projectPage(key) {
   const project=allProjects().find(row=>row.full_name===key);
   if (!project) return `${heading('项目不存在',false)}${empty('返回总览选择项目')}`;
@@ -326,7 +341,8 @@ function projectPage(key) {
   const agentSection=`<div id="project-agents">${section(`${icon('bot')}AI 工作现场`,agentCards(agents))}</div>`;
   return `${heading(projectName(key))}<div class="live-project-info"><span>${project.local ? '本地工作区' : '已关联 GitHub 仓库'}</span>${status[project.status] ? `<span class="status-badge tone-${tone[project.status]||'muted'}">${status[project.status]}</span>` : ''}<span>${esc(key)}</span></div>
     <div class="metric-grid live-project-metrics">${metric('近期会话',sessions.length,'activity')}${metric('产出文档',docs.length,'document')}${metric('草稿',docs.filter(row=>row.is_draft).length,'document')}</div>
-    <nav class="live-page-tabs" aria-label="项目内容"><button data-scroll-to="project-milestones">项目里程碑</button><button data-scroll-to="project-agents">AI 工作现场</button><button data-scroll-to="project-sessions">近期会话</button><button data-scroll-to="project-docs">产出文档</button><button data-scroll-to="project-members">项目成员</button></nav>
+    <nav class="live-page-tabs" aria-label="项目内容"><button data-scroll-to="project-modules">功能模块</button><button data-scroll-to="project-milestones">项目里程碑</button><button data-scroll-to="project-agents">AI 工作现场</button><button data-scroll-to="project-sessions">近期会话</button><button data-scroll-to="project-docs">产出文档</button><button data-scroll-to="project-members">项目成员</button></nav>
+    <div id="project-modules">${projectModules(key)}</div>
     <div id="project-milestones">${milestonePanel(key)}</div>
     ${agents.length?agentSection:''}
     <div id="project-sessions">${section(`${icon('activity')}近期会话与总结`,sessionRows(sessions))}</div>

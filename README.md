@@ -4,11 +4,13 @@
 
 客户端先自行查找和核验，仍缺信息或证据冲突时才询问用户。固定脚本负责解析、差分、续传和提交，服务端校验、去重、存储与展示。
 
+项目详情有独立的「功能模块」区，用名称和简短介绍展示项目包含的功能，与里程碑分开。客户端可随项目报告补充模块；部署需应用 `012_project_modules.sql`。
+
 ## 下载上报包
 
-**[下载最新上报 ZIP：project-pulse-report-3.4.0.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.4.0-20261116/project-pulse-report-3.4.0.zip)**
+**[下载最新上报 ZIP：project-pulse-report-3.5.0.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.5.0-20261117/project-pulse-report-3.5.0.zip)**
 
-当前版本：**3.4.0**。
+当前版本：**3.5.0**。
 
 本版修复超过1 MiB的长日志续传，并支持一个业务项目关联多个真实GitHub仓库；PR按真实仓库与编号保存，Token仍按原会话和原始字节位置去重。真正服务端先应用011迁移并重启，客户端覆盖原永久目录并保留状态后重试原待发请求，不清空游标。
 
@@ -36,6 +38,8 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，先�
 我授权你识别本机 Codex 主会话及相关项目、成员、GitHub仓库和PR、模型与真实Token用量，并生成脱敏摘要、项目目标和里程碑。先主动查找并复用已有信息，仍缺信息或证据冲突时，再集中询问我。排除当前上报会话，不编造数据。
 
 使用包内对应系统的固定脚本，向 http://192.168.16.70:4185 增量上报。一个所选业务项目可关联多个仓库：查证每个真实仓库及数字ID，按README写repositories.json；PR按实际仓库与编号提交，不伪造单仓库归属。先核对服务端multi_repository_projects能力。PR也要按README查证并结构化提交，分别核对日志、Token和PR回执。
+
+每轮检查所选项目的功能模块。服务端支持 project_modules 时，根据项目 README、代码和已确认成果整理 1–12 项，每项写模块名称和一句职责介绍。首次缺失或有变化时提交完整 modules 清单，并核对项目报告是否显示。无新增日志时按项目报告补报流程提交，沿用原游标和计量上下文。证据不足或服务端尚未启用时，在结果里说明。
 
 项目状态由会话证据判断，在研包含尚未完成的阻塞项目；不按时间超时，与Agent执行状态分开。状态变化或首次补齐时按README提交statuses.json并核对status_receipt，不把一轮任务结束当作整个项目完成。
 
@@ -77,7 +81,7 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，先�
 
 下载新 ZIP，覆盖原永久解压目录，保留 `.pulse-state-*.json`、`.pulse-project-paths.json`、`.pulse-project-selection.json`、`.pulse-pending/`，再发送上面的提示词。更新原任务的正文并重新核验，不重复创建。待发请求先恢复，不清空游标或重新导入历史 Token。
 
-当前包3.4.0使用协议3。真正服务端需先执行009_project_lifecycle迁移并重启，提供 `usage_receipt`、`project_mapping_backfill`、`client_pr_ingest`、`client_project_status` 能力。Agent识别窗口现为2小时，并补足缺少开始事件的活动识别；已完成、取消或失败的任务不因此复活。更新ZIP不会自动更新另一台电脑的服务端或已存在的定时任务。
+当前包3.5.0使用协议3。真正服务端需先执行009_project_lifecycle迁移并重启，提供 `usage_receipt`、`project_mapping_backfill`、`client_pr_ingest`、`client_project_status` 能力。Agent识别窗口现为2小时，并补足缺少开始事件的活动识别；已完成、取消或失败的任务不因此复活。更新ZIP不会自动更新另一台电脑的服务端或已存在的定时任务。
 
 ## 服务端与开发
 
@@ -87,6 +91,6 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，先�
 - 真实数据使用 PostgreSQL；迁移、局域网部署、备份及独立令牌模式见 [服务端部署说明](docs/deployment.md)。
 - 客户端可通过 [团队数据修正接口](docs/team-edits.md) 修改全员的摘要、项目归属、目标、里程碑和状态；真正服务端需应用010迁移并启用 `PULSE_TEAM_EDITS=1`。
 - `npm test` 运行测试；在可丢弃的已迁移数据库设置 `DATABASE_URL` 后运行 `npm run test:integration`。便携采集器 CI 覆盖 macOS、Windows 和 Ubuntu。
-- 构建上报包：`sh ops/report/build-package.sh /绝对路径/project-pulse-report-3.4.0.zip`。包内不包含本机状态、路径映射、日志或凭证。
+- 构建上报包：`sh ops/report/build-package.sh /绝对路径/project-pulse-report-3.5.0.zip`。包内不包含本机状态、路径映射、日志或凭证。
 
 [技术方案](技术方案.md) · [上报详细流程](ops/report/README.md) · [手动协议及其他来源适配](docs/lan-report.md)
