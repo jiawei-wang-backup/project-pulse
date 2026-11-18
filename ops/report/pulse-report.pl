@@ -19,14 +19,16 @@ my @only_sources;
 my $project_key;
 my $max_line_bytes=32*1024*1024;
 my ($action,$work,$server,$label,$exclude,$include,$tool) =
-  ('Prepare',undef,'http://192.168.16.70:4185',undef,undef,0,'codex');
+  ('Prepare',undef,'http://192.168.20.189:4185',undef,undef,0,'codex');
 GetOptions('action=s'=>\$action,'work-dir=s'=>\$work,'server=s'=>\$server,'label=s'=>\$label,
     'exclude-session-id=s'=>\$exclude,'include-evidence'=>\$include,'summarizer-tool=s'=>\$tool,
     'state-dir=s'=>\$state_dir,'github-login=s'=>\$github_login,'resolve-git'=>\$resolve_git,
     'session-root=s@'=>\@session_roots,'project-map=s'=>\$project_map,'only-source=s@'=>\@only_sources,'project-key=s'=>\$project_key,'max-line-bytes=i'=>\$max_line_bytes) or die "Invalid options\n";
 die "MaxLineBytes must be between 1 MiB and 256 MiB\n" unless $max_line_bytes>=1048576 && $max_line_bytes<=268435456;
-die "Expected Inventory, Prepare, or Submit\n" unless $action =~ /\A(?:Inventory|Prepare|Submit)\z/;
-die "Prepare and Submit require --work-dir\n" unless $work || $action eq 'Inventory';
+my %action_names = ('查询记录'=>'Inventory', '准备上报'=>'Prepare', '提交上报'=>'Submit');
+$action = $action_names{$action} // $action;
+die "请选择查询记录、准备上报或提交上报\n"  unless $action =~ /\A(?:Inventory|Prepare|Submit)\z/;
+die "准备上报和提交上报需要指定工作目录 --work-dir\n" unless $work || $action eq 'Inventory';
 $work=abs_path($work) // File::Spec->rel2abs($work) if defined $work;
 $state_dir=File::Spec->rel2abs($state_dir);
 die "Invalid tool ID\n" unless $tool =~ /\A[a-z][a-z0-9_]{0,63}\z/;

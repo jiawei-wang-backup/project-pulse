@@ -1,6 +1,10 @@
 import { icon } from './icons.js';
 import {researchProjectCount,memberProjectKeys,renderProjectDocuments,isRunningAgent,splitDeferredPanels,adaptiveColumnsClass} from './live-projects.js';
 
+const themeRoot = document.documentElement;
+themeRoot.dataset.theme = localStorage.getItem('pulse-theme') === 'dark' ? 'dark' : 'light';
+const themeAction = () => themeRoot.dataset.theme === 'light' ? '切换深色' : '切换浅色';
+let archived = false;
 const app = document.querySelector('#app');
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
 const date = value => value ? new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Singapore',month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
@@ -100,16 +104,16 @@ function milestonePanel(key) {
 }
 function side() {
   const current=route(), selected=key=>current.page==='project'&&current.key===key;
-  return `<aside class="sidebar" id="sidebar"><div class="brand"><span class="brand-mark">${icon('pulse')}</span><span class="brand-name">Project Pulse<small>WORKSPACE</small></span></div>
+  return `<aside class="sidebar" id="sidebar"><div class="brand"><span class="brand-mark">${icon('pulse')}</span><span class="brand-name">Project Pulse<small>工作台</small></span></div>
     <a class="nav-main ${current.page==='overview'?'is-active':''}" href="#/overview">${icon('grid')}总览</a>
     <a class="nav-main ${current.page==='sessions'?'is-active':''}" href="#/sessions">${icon('activity')}会话</a>
     <a class="nav-main ${current.page==='outputs'?'is-active':''}" href="#/outputs">${icon('document')}产出文档</a>
     <a class="nav-main ${['team','member'].includes(current.page)?'is-active':''}" href="#/team">${icon('users')}团队成员</a>
     <div class="nav-section"><span>项目空间</span><span>${allProjects().length}</span></div>
     <nav class="project-nav">${allProjects().map(item=>`<a class="${selected(item.full_name)?'is-active':''}" href="#/projects/${encodeURIComponent(item.full_name)}">${icon('folder')}<span class="live-nav-name">${esc(projectName(item.full_name))}</span></a>`).join('')}</nav>
-    <div class="sidebar-spacer"></div>${sidebarUsage(data.models || [])}<div class="workspace-user"><span class="avatar">P</span><div><strong>真实数据</strong><small>ASIA/SINGAPORE</small></div><span class="local-dot"></span></div></aside>`;
+    <div class="sidebar-spacer"></div>${sidebarUsage(data.models || [])}<div class="workspace-user"><span class="avatar">P</span><div><strong>真实数据</strong><small>新加坡时间</small></div><span class="local-dot"></span></div></aside>`;
 }
-function topbar(title) { return `<div class="topbar"><div class="breadcrumbs"><button class="icon-button live-menu" id="menu" aria-label="打开导航">${icon('menu')}</button><a href="#/overview">工作空间</a>${icon('chevron')}<span class="current">${esc(title)}</span></div><div class="topbar-right"><button class="button-secondary" id="refresh">刷新</button></div></div>`; }
+function topbar(title) { return `<div class="topbar"><div class="breadcrumbs"><button class="icon-button live-menu" id="menu" aria-label="打开导航">${icon('menu')}</button><a href="#/overview">工作空间</a>${icon('chevron')}<span class="current">${esc(title)}</span></div><div class="topbar-right">${data?.imported_at ? '<button class="button-secondary" id="archive-switch">' + (archived ? '返回实时' : '历史快照') + '</button>' : ''}<button class="button-secondary" id="theme-switch">${themeAction()}</button><button class="button-secondary" id="refresh">刷新</button></div></div>`; }
 function heading(title, period=true) { return `<div class="page-heading"><div><h1>${esc(title)}</h1></div>${period?`<div class="period-control" role="group" aria-label="统计时间">${icon('calendar')}${[1,7,30].map(value=>`<button class="period-button ${days===value?'is-active':''}" data-days="${value}" aria-pressed="${days===value}">${periods[value]}</button>`).join('')}</div>`:''}</div>`; }
 function metric(label, value, mark='grid', lime=false, {unit='', foot=''}={}) {
   return `<div class="metric">
@@ -197,12 +201,12 @@ function teamCards(key='') {
     const projects=memberProjects(name,key);
     const active=runningAgents(key).filter(agent=>agent.display_name===name).length;
     const initials=name.trim().split(/\s+/).map(part=>part[0]).slice(0,2).join('').toUpperCase();
-    return `<a class="live-team-card accent-${['lime','orange','blue','purple','teal'][index%5]}" href="#/team/${encodeURIComponent(name)}"><span class="person-avatar" aria-hidden="true">${esc(name.trim().slice(-1))}<small>${esc(initials)}</small></span><div class="live-team-name"><strong>${esc(name)}</strong><small>${esc(person.tool_id||'开发工具待上报')}</small></div><div class="live-team-stats"><strong>${projects.length} 个项目</strong><small>${active?`${active} Agent 运行中`:'查看工作详情'}</small></div><div class="live-team-projects">${projects.length?projects.map(project=>`<span>${esc(projectName(project))}</span>`).join(''):'<span>项目待关联</span>'}</div></a>`;
+    return `<a class="live-team-card accent-${['lime','orange','blue','purple','teal'][index%5]}" href="#/team/${encodeURIComponent(name)}"><span class="person-avatar" aria-hidden="true">${esc(name.trim().slice(-1))}<small>${esc(initials)}</small></span><div class="live-team-name"><strong>${esc(name)}</strong><small>${esc(person.tool_id||'开发工具待上报')}</small></div><div class="live-team-stats"><strong>${projects.length} 个项目</strong><small>${active?`${active} 智能助手 运行中`:'查看工作详情'}</small></div><div class="live-team-projects">${projects.length?projects.map(project=>`<span>${esc(projectName(project))}</span>`).join(''):'<span>项目待关联</span>'}</div></a>`;
   }).join('')}</div>`:empty('暂无团队成员')}</section>`;
 }
 function agentCards(items) {
-  if (!items.length) return empty('目前没有运行中的 Agent');
-  return `<div class="live-agent-grid">${items.map(row=>`<article class="live-agent-card"><div class="live-agent-top"><span class="model-mark" style="--model-color:var(--lime)">${esc((row.tool_id||'A').slice(0,1).toUpperCase())}</span><div><strong>${esc(row.tool_id||'开发工具')} · ${esc(row.kind==='subagent'?'子 Agent':'主 Agent')}</strong><small>${esc(row.model||'模型未知')}</small></div><span class="status-badge tone-green">运行中</span></div><h3>${esc(row.display_title||row.title||'未命名会话')}</h3><p>${esc(row.display_name)} · ${esc(projectName(projectKey(row)))}</p><time>${date(row.last_activity_at)}</time></article>`).join('')}</div>`;
+  if (!items.length) return empty('目前没有运行中的 智能助手');
+  return `<div class="live-agent-grid">${items.map(row=>`<article class="live-agent-card"><div class="live-agent-top"><span class="model-mark" style="--model-color:var(--lime)">${esc((row.tool_id||'A').slice(0,1).toUpperCase())}</span><div><strong>${esc(row.tool_id||'开发工具')} · ${esc(row.kind==='subagent'?'子助手':'主助手')}</strong><small>${esc(row.model||'模型未知')}</small></div><span class="status-badge tone-green">运行中</span></div><h3>${esc(row.display_title||row.title||'未命名会话')}</h3><p>${esc(row.display_name)} · ${esc(projectName(projectKey(row)))}</p><time>${date(row.last_activity_at)}</time></article>`).join('')}</div>`;
 }
 function runningAgents(key='') {
   return (data.agent_details||[]).filter(row=>isRunningAgent(row) && (!key||projectKey(row)===key));
@@ -307,7 +311,7 @@ function overview() {
   const deferredPanels = optional.deferred.map(panel=>panel.html).join('');
   return `${heading('总览')}<div class="metric-grid live-overview-metrics">
     ${metric('在研项目', activeProjects, 'folder', false, {unit:`/ ${projects.length}`})}
-    ${metric('运行中的 Agent', data.running, 'bot', false, {unit:'个'})}
+    ${metric('运行中的 智能助手', data.running, 'bot', false, {unit:'个'})}
     ${metric('成果文档', new Set(data.pulls.map(row=>row.url)).size, 'document', false, {unit:'份'})}
     ${metric(`${periods[days]} Token 用量`, count((data.models || []).reduce((sum, row) => sum + usageTotal(row), 0n)), 'token', true)}
   </div>
@@ -321,7 +325,7 @@ function overview() {
 const pulseModules = [
   {name:'客户端采集与上报',description:'从授权的 Codex 会话增量采集工作摘要、模型用量和 Token，并核对服务端回执。'},
   {name:'项目进度与里程碑',description:'汇总项目目标、已完成与待完成事项，以及在研、阻塞等状态。'},
-  {name:'团队与 Agent 活动',description:'查看成员参与的项目、近期会话和正在运行的 Agent。'},
+  {name:'团队与 智能助手 活动',description:'查看成员参与的项目、近期会话和正在运行的 智能助手。'},
   {name:'GitHub 仓库与 PR',description:'一个项目可关联多个仓库，PR 按真实仓库归档并可跳转 GitHub。'},
   {name:'用量统计',description:'按时间、模型和项目查看输入、缓存输入及输出 Token。'},
   {name:'团队数据修正',description:'服务端启用后，登记设备可修正摘要、项目归属和进度，并保留审计记录。'}
@@ -353,7 +357,7 @@ function projectPage(key) {
 }
 function teamPage() {
   const subagents=data.agents.filter(row=>row.kind==='subagent').reduce((sum,row)=>sum+row.count,0);
-  return `${heading('团队成员')}<div class="metric-grid live-team-metrics">${metric('团队员工',data.people.length,'users')}${metric('参与项目',allProjects().length,'folder')}${metric('运行中的 Agent',data.running,'bot')}${metric('开发工具子 Agent',subagents,'bot')}</div>${teamCards()}${section(`${icon('users')}成员活动`,peopleRows())}`;
+  return `${heading('团队成员')}<div class="metric-grid live-team-metrics">${metric('团队员工',data.people.length,'users')}${metric('参与项目',allProjects().length,'folder')}${metric('运行中的 智能助手',data.running,'bot')}${metric('开发工具子助手',subagents,'bot')}</div>${teamCards()}${section(`${icon('users')}成员活动`,peopleRows())}`;
 }
 function memberPage(name) {
   const person=data.people.find(item=>item.display_name===name);
@@ -361,7 +365,7 @@ function memberPage(name) {
   const sessions=data.sessions.filter(item=>item.display_name===name);
   const projects=memberProjects(name);
   const active=runningAgents().filter(item=>item.display_name===name);
-  return `${heading(name)}<div class="metric-grid live-team-metrics">${metric('参与项目',projects.length,'folder')}${metric('近期会话',sessions.length,'activity')}${metric('运行中的 Agent',active.length,'bot')}${metric('最近活跃工具',person.tool_id||'—','code')}</div>${section(`${icon('folder')}参与项目`,projects.length?projectCards(allProjects().filter(item=>projects.includes(item.full_name))):empty('项目待关联'))}${section(`${icon('activity')}近期会话与总结`,sessionGroups(sessions))}${section(`${icon('bot')}AI 工作现场`,agentCards(active))}`;
+  return `${heading(name)}<div class="metric-grid live-team-metrics">${metric('参与项目',projects.length,'folder')}${metric('近期会话',sessions.length,'activity')}${metric('运行中的 智能助手',active.length,'bot')}${metric('最近活跃工具',person.tool_id||'—','code')}</div>${section(`${icon('folder')}参与项目`,projects.length?projectCards(allProjects().filter(item=>projects.includes(item.full_name))):empty('项目待关联'))}${section(`${icon('activity')}近期会话与总结`,sessionGroups(sessions))}${section(`${icon('bot')}AI 工作现场`,agentCards(active))}`;
 }
 function sessionsPage() { return `${heading('近期会话与总结')}${section(`${icon('activity')}会话`,sessionGroups(data.sessions))}`; }
 function outputsPage() { return `${heading('产出文档')}${section(`${icon('document')}文档清单`,pulls(data.pulls))}`; }
@@ -370,19 +374,32 @@ function render() {
   const current=route(), names={overview:'总览',team:'团队成员',member:current.name,sessions:'近期会话与总结',outputs:'产出文档',project:projectName(current.key)};
   const content=current.page==='project'?projectPage(current.key):current.page==='member'?memberPage(current.name):current.page==='team'?teamPage():current.page==='sessions'?sessionsPage():current.page==='outputs'?outputsPage():overview();
   document.title=`${names[current.page]} · Project Pulse`;
-  app.innerHTML=`${side()}<div class="live-nav-backdrop" id="backdrop"></div><div class="content-shell">${topbar(names[current.page])}<main id="main-content" tabindex="-1">${error?`<p class="live-error" role="status">${esc(error)}</p>`:''}${content}<footer class="live-footer">Project Pulse · 数据按新加坡时间统计</footer></main></div>`;
+  app.innerHTML=`${side()}<div class="live-nav-backdrop" id="backdrop"></div><div class="content-shell">${topbar(names[current.page])}<main id="main-content" tabindex="-1">${error?`<p class="live-error" role="status">${esc(error)}</p>`:''}${content}<footer class="live-footer">Project Pulse · 数据按新加坡时间统计${archived ? ' · 历史快照 ' + date(data.imported_at) : data.usage_basis === 'local' ? ' · 用量按本机上报统计' : ''}</footer></main></div>`;
 }
 async function load() {
   if (loading) return;
   loading=true;error='';if (!data) render();
   try {
-    const response=await fetch(`/api/v1/dashboard?days=${days}`);
+    const response=await fetch(`/api/v1/dashboard?days=${days}${archived ? '&archive=1' : ''}`);
     if (!response.ok) throw new Error('数据读取失败，请重试');
     data=await response.json();
+
   } catch (cause) {error=cause.message||'数据读取失败，请重试';}
   finally {loading=false;render();}
 }
 document.addEventListener('click',event=>{
+  if (event.target.closest('#archive-switch') && !loading) {
+    archived = !archived;
+    void load();
+    return;
+  }
+  const switcher = event.target.closest('#theme-switch');
+  if (switcher) {
+    themeRoot.dataset.theme = themeRoot.dataset.theme === 'light' ? 'dark' : 'light';
+    localStorage.setItem('pulse-theme', themeRoot.dataset.theme);
+    switcher.textContent = themeAction();
+    return;
+  }
   const period=event.target.closest('[data-days]');
   if (period) {days=Number(period.dataset.days);sessionStorage.setItem('pulse-days',String(days));void load();return;}
   if (event.target.closest('#refresh')) {void load();return;}

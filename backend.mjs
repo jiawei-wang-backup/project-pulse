@@ -657,7 +657,16 @@ export function createApi({localView = false, lanEnrollment = false} = {}) {
         } else if (req.method==='GET' && url.pathname==='/api/v1/report-cursor') {
           res.setHeader('Cache-Control','no-store');
           data = await reportCursor(pool,token,url.searchParams.get('source_id'),lan);
+        } else if (req.method==='GET' && /^\/api\/v1\/projects\/[^/]+$/.test(url.pathname)) {
+          if (!validServiceToken(req.headers.authorization, process.env.PULSE_EMBER_TOKEN)) fail(401,'unauthorized');
+          const id = url.pathname.split('/').at(-1);
+          if (!projectGranted(id,process.env.PULSE_EMBER_PROJECTS)) fail(403,'project_forbidden');
+          const days=Number(url.searchParams.get('days') || 7);
+          if (![1,7,30].includes(days)) fail(422,'invalid_days');
+          data=await projectSnapshot(pool,id,days);
+          if (!data) fail(404,'project_not_found');
         } else if (req.method==='GET' && url.pathname==='/api/v1/dashboard') {
+          if (!localView && !validServiceToken(req.headers.authorization,process.env.PULSE_DASHBOARD_TOKEN)) fail(401,'unauthorized');
           const days = Number(url.searchParams.get('days') || 7);
           if (![1,7,30].includes(days)) fail(422,'invalid_days');
           data = await dashboard(pool,days);
@@ -670,3 +679,4 @@ export function createApi({localView = false, lanEnrollment = false} = {}) {
     }
   };
 }
+import { validServiceToken, projectGranted, projectSnapshot } from './project-api.mjs';

@@ -1,0 +1,30 @@
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #fff;
+  --sidebar: #f8f9f8;
+  --panel: #fff;
+  --panel-hover: #f7f9f7;
+  --inset: #f6f7f6;
+  --border: #dfe3df;
+  --text: #202421;
+  --subtle: #4d5650;
+  --muted: #626c65;
+  --lime: #25713a;
+  --green: #26713c;
+  --amber: #895d15;
+  --red: #ad3f43;
+  --blue: #306998;
+  --purple: #725598;
+  --orange: #935729;
+}
+[data-theme="light"] :is(.topbar,.button-secondary,.live-team-card,.milestone-dot,.period-control,.sidebar-usage) {background:var(--panel);border-color:var(--border)}
+[data-theme="light"] :is(.nav-main.is-active,.project-nav a.is-active,.period-button.is-active,.button-secondary:hover,.live-team-card:hover) {background:#edf2ed;color:var(--text)}
+[data-theme="light"] :is(.breadcrumbs .current,.button-secondary) {color:var(--text)}
+[data-theme="light"] :is(.brand-mark,.boot-mark,.avatar,.person-avatar) {background:#e4f1e5;color:#256437;border-color:#cde2d0}
+[data-theme="light"] :is(.progress-track,.stacked-bar) {background:var(--border)}
+[data-theme="light"] .milestone::before {background:var(--border)}
+[data-theme="light"] .milestone.is-accepted::before {background:#8aca91}
+[data-theme="light"] .milestone.is-accepted .milestone-dot {background:#fff;color:var(--green);border-color:#83c98b}
+[data-theme="light"] .tone-green {background:#eef7ef;border-color:#d4e7d7}
+[data-theme="light"] .tone-red {background:#fff1f0;border-color:#f2d7d6}
+[data-theme="light"] :is(.live-model-table,.live-member-table) thead {background:var(--inset)}

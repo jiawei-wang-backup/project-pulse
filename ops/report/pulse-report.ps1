@@ -1,8 +1,8 @@
-param(
-    [ValidateSet('Inventory','Prepare','Submit')][string]$Action = 'Prepare',
+﻿param(
+    [ValidateSet('Inventory','Prepare','Submit','查询记录','准备上报','提交上报')][string]$Action = 'Prepare',
     [string]$WorkDir,
     [string]$ProjectKey,
-    [string]$Server = 'http://192.168.16.70:4185',
+    [string]$Server = 'http://192.168.20.189:4185',
     [string]$Label,
     [string]$ExcludeSessionId,
     [string]$SummarizerTool = 'codex',
@@ -15,6 +15,8 @@ param(
     [string[]]$OnlySource = @(),
     [ValidateRange(1048576,268435456)][int]$MaxLineBytes = 33554432
 )
+$ActionNames = @{ '查询记录' = 'Inventory'; '准备上报' = 'Prepare'; '提交上报' = 'Submit' }
+if ($ActionNames.ContainsKey($Action)) { $Action = $ActionNames[$Action] }
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false, $true)
 function Hash([string]$Value) {

@@ -30,7 +30,7 @@ PULSE_LAN_ENROLLMENT=1 PULSE_HOST=0.0.0.0 PORT=4185 npm start
 
 3.4.0真正服务端必须先应用011_project_repositories迁移并重启，确认目录声明multi_repository_projects。迁移保留现有仓库、会话、用量和游标；关联按客户端确认建立，不按名字猜测或自动合并历史项目。
 
-当前上报包指向 `http://192.168.16.70:4185`。更换服务地址时同时更新脚本默认值、提示词、README和已有任务，再重新分发；不能用客户端IP替换。
+当前上报包指向 `http://192.168.20.189:4185`。更换服务地址时同时更新脚本默认值、提示词、README和已有任务，再重新分发；不能用客户端IP替换。
 
 服务端更新后按原进程管理方式重启，核对 `/api/v1/report-directory` 的协议与能力。3.1.0需要先应用009_project_lifecycle迁移，并支持client_project_status；另外保留精确用量回执、项目映射补报及客户端PR提交能力。首页能打开不等于上报能力已更新。
 

@@ -1,5 +1,5 @@
 {
-  "server_url": "http://192.168.16.70:4185",
+  "server_url": "http://192.168.20.189:4185",
   "device_token": "replace-with-device-token",
   "summarizer_tool": "codex",
   "allow_lan_http": true
