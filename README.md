@@ -96,3 +96,9 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，先�
 - 构建上报包：`sh ops/report/build-package.sh /绝对路径/project-pulse-report-3.6.0.zip`。包内不包含本机状态、路径映射、日志或凭证。
 
 [技术方案](技术方案.md) · [上报详细流程](ops/report/README.md) · [手动协议及其他来源适配](docs/lan-report.md)
+
+## 从 Ember 查询看板
+
+在已绑定的研发进度看板频道里，输入 `@` 并选择「研发看板试点」，可以问「这个项目还差什么？」或「今天早上九点前有几台电脑上传成功？」。
+
+项目进度来自最新的项目报告，回答会注明报告日期。上传台数来自本机 PostgreSQL 的成功回执，按设备去重。镜像服务的 `GET /api/v1/local-upload-counts` 仅接受本机请求，返回今天和今天截至上午九点的全团队台数，时区取自服务端。九点前第二项为空；从旧服务器导入的看板摘要不包含逐台上传回执。
