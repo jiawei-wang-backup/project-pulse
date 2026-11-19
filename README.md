@@ -8,15 +8,24 @@
 
 ## 下载上报包
 
-**[下载中文局域网接入包 v3.6.0（ZIP）](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.6.0-20261117/project-pulse-report-3.6.0-lan.zip)**
+**[下载中文局域网接入包 v3.6.0-r2（ZIP）](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.6.0-20261117/project-pulse-report-3.6.0-lan-r2.zip)**
 
 ZIP 可直接从 GitHub 下载。解压后，授权和上报需要连接团队局域网。
 
-解压后用 Codex 打开文件夹，把下面的提示词发给它。收到授权链接后，用本人账号登录 Ember 并点「允许」。首次使用时如需信任 HTTPS 证书，按 ZIP 内的 README 操作。
+解压后，用 Codex 打开目录并发下面的提示词。选好项目和频道、完成网页授权后，Codex 会继续试报、发布已提交的脱敏进展并设置自动同步。首次使用时如需信任 HTTPS 证书，按 ZIP 内说明操作。
 
 ```text
-读取当前目录的 README.md、PROMPT.txt 和 project-selection.md。先核对 ZIP 内 SHA256SUMS，确认服务端是局域网 Ember 及 Project Pulse。执行包内 ember-connect.py 的 connect 命令，在运行期间把输出的 Ember 授权链接交给我。我会用本人账号登录并在网页上决定是否允许。授权成功后，配置本机 Codex 的 ember-cn 连接，并说明如何重新打开会话检查是否能读取频道。请勿替我同意授权，也不要索取登录凭证。
-如果我要接入项目上报，请先按 PROMPT.txt 只读列出本机项目，等我明确选择后再试报。若只需要连接 Ember，网页授权完成即可。
+请直接完成接入。用当前解压目录的 README.md、PROMPT.txt、project-selection.md 和包内工具，不要让我手填服务端地址、编辑配置或另发提示词。
+
+运行 pulse-onboard.py links 核对两个服务端并记下地址。只读识别本机项目，在同一条消息一次列出编号，请我选择需要上报的项目和各自要发布进展的 Ember 频道名称。允许只上报到看板。不要默认全选或自行选频道。
+
+根据我的选择运行 ember-connect.py connect。需要发布进展时加 --write；目标频道需要私有权限时才加 --private。把命令输出的授权链接发给我，等待我用本人账号授权，不要代我点允许或索取凭证。授权完成后运行 ember-connect.py rooms，核实发布目标是我指定的频道，再保存私有 .pulse-project-selection.json，给对应已选项目记录 ember_room_id。频道匹配不唯一时才询问，不猜频道。
+
+随后立即按 PROMPT.txt 完成试报。运行 pulse-onboard.py prepare，使用真实的本轮会话 UUID 排除接入会话。根据返回的脱敏证据在 work_dir 中准备有依据的 summaries.json、pulls.json 和 statuses.json；有新进展就写项目目标和里程碑。随后运行 pulse-onboard.py submit --work-dir <本轮返回目录>。脚本会核对 Project Pulse 回执，并把已提交的脱敏进展发布到已绑定的 Ember 频道。核对 report、ember_posts 和 ember_error。没有新进展时不发空消息。不要把网页授权成功当成发布成功。
+
+试报后用可用的定时任务工具创建或更新原有的「Project Pulse 每30分钟上报」，在本目录用同一 prepare、整理、submit 流程。以后沿用已确认的项目和频道，不重复询问，也不自行加入其他项目或改频道。任务工具不可用时保留已完成的试报并说明限制。
+
+结束时主动给出可点击的 Ember 工作区、已同步频道及 Project Pulse 看板链接（取自脚本结果），并分别说明看板回执、Ember 发布、定时任务是否成功。失败时也返回服务端地址和实际卡住的步骤。
 ```
 
 当前版本：**3.6.0**。
