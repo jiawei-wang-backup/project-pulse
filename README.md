@@ -8,22 +8,24 @@
 
 ## 下载上报包
 
-**[下载中文局域网接入包 v3.6.0-r3（ZIP）](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.6.0-20261117/project-pulse-report-3.6.0-lan-r3.zip)**
+**[下载中文局域网接入包 v3.6.0-r4（ZIP）](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.6.0-20261117/project-pulse-report-3.6.0-lan-r4.zip)**
 
 ZIP 可直接从 GitHub 下载。解压后，授权和上报需要连接团队局域网。
 
 解压后，用 Codex 打开目录并发下面的提示词。选好项目并完成网页授权后，Codex 会为新项目创建私有频道，继续试报、发布脱敏进展并设置自动同步。新频道初始只加入授权者。首次使用时如需信任 HTTPS 证书，按 ZIP 内说明操作。
+
+绑定频道后会自动同步首份项目快照，只有状态变化也能更新。Ember 暂时不可用时，保留待发布状态供下一轮补发。
 
 ```text
 请直接完成接入。用当前解压目录的 README.md、PROMPT.txt、project-selection.md 和包内工具，不要让我手填服务端地址、编辑配置或另发提示词。
 
 运行 pulse-onboard.py links 核对两个服务端并记下地址。只读识别本机项目，在同一条消息列出编号，请我选择要同步的项目，并说明新项目会自动创建私有 Ember 频道。允许指定已有频道或只上报到看板。不要默认全选。
 
-根据我的选择保存私有 .pulse-project-selection.json。只上报到看板的项目记录 ember_publish: false；只有我指定已有频道时才手动匹配并写入 ember_room_id。需要同步 Ember 时运行 ember-connect.py connect --project-channels，把输出的 HTTPS 链接给我。请我在同一授权页允许发消息，并勾选私有频道和创建私有项目频道。不要代我授权或索取凭证。授权后调用 pulse-onboard.py bind-channels，按已核实的 GitHub 仓库创建新项目频道或复用对应的私有项目频道。确认目标已绑定后才发布。
+根据我的选择保存私有 .pulse-project-selection.json。只上报到看板的项目记录 ember_publish: false；只有我指定已有频道时才手动匹配并写入 ember_room_id。需要同步 Ember 时运行 ember-connect.py connect --project-channels，命令会尝试自动打开浏览器，并输出备用 HTTPS 链接。请我在同一授权页允许发消息，并勾选私有频道和创建私有项目频道。不要代我授权或索取凭证。授权后调用 pulse-onboard.py bind-channels，按已核实的 GitHub 仓库创建新项目频道或复用对应的私有项目频道。绑定后脚本会自动同步已核实的项目快照。有待补发时保留本机状态。
 
-随后立即按 PROMPT.txt 完成试报。运行 pulse-onboard.py prepare，使用真实的本轮会话 UUID 排除接入会话。根据返回的脱敏证据在 work_dir 中准备有依据的 summaries.json、pulls.json 和 statuses.json；有新进展就写项目目标和里程碑。随后运行 pulse-onboard.py submit --work-dir <本轮返回目录>。脚本会核对 Project Pulse 回执，并把已提交的脱敏进展发布到已绑定的 Ember 频道。核对 report、ember_posts 和 ember_error。没有新进展时不发空消息。不要把网页授权成功当成发布成功。
+随后立即按 PROMPT.txt 完成试报。运行 pulse-onboard.py prepare，使用真实的本轮会话 UUID 排除接入会话。根据返回的脱敏证据在 work_dir 中准备有依据的 summaries.json、pulls.json 和 statuses.json；有新进展就写项目目标和里程碑。随后运行 pulse-onboard.py submit --work-dir <本轮返回目录>。脚本会核对 Project Pulse 回执，并把已提交的脱敏进展发布到已绑定的 Ember 频道。核对 report、ember_posts 和 ember_error。没有新日志但项目状态变化时也要提交状态，脚本会读取服务端更新并同步。Ember 临时失败时保留待发布状态，下轮自动补发。同一项目进展不重复发。不要把网页授权成功当成发布成功。
 
-试报后用可用的定时任务工具创建或更新原有的「Project Pulse 每30分钟上报」，在本目录用同一 prepare、整理、submit 流程。以后沿用已确认的项目和频道，不重复询问，也不自行加入其他项目或改频道。任务工具不可用时保留已完成的试报并说明限制。
+试报后用可用的定时任务工具创建或更新原有的「Project Pulse 每30分钟上报」，在本目录用同一 prepare、整理、submit 流程。即使本轮没有新日志，也要运行 sync-ember 来核对状态和补发。以后沿用已确认的项目和频道，不重复询问，也不自行加入其他项目或改频道。任务工具不可用时保留已完成的试报并说明限制。
 
 结束时主动给出可点击的 Ember 工作区、已同步频道及 Project Pulse 看板链接（取自脚本结果），并分别说明看板回执、Ember 发布、定时任务是否成功。失败时也返回服务端地址和实际卡住的步骤。
 ```

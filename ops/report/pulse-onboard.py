@@ -1,5 +1,8 @@
 """Run the bundled collector with the project's confirmed scope and service addresses."""
 import argparse
+from contextlib import contextmanager
+from datetime import datetime, timezone
+import os
 import json
 import hashlib
 import importlib.util
@@ -25,13 +28,17 @@ def approved_sources():
     return sources
 
 
-def collector(action, work, sources, excluded, label, github_login):
+def collector(action, work, sources, excluded=None, label=None, github_login=None, project_key=None):
     if sys.platform == "win32":
         def quote(text):
             return "'" + str(text).replace("'", "''") + "'"
 
-        parameters = [f"-Action {action}", f"-WorkDir {quote(work)}", f"-Server {quote(PULSE)}",
+        parameters = [f"-Action {action}", f"-Server {quote(PULSE)}",
                       "-OnlySource @(" + ",".join(quote(source) for source in sources) + ")"]
+        if work is not None:
+            parameters.append(f"-WorkDir {quote(work)}")
+        if project_key is not None:
+            parameters.append(f"-ProjectKey {quote(project_key)}")
         if action == "Prepare":
             parameters += ["-IncludeEvidence", "-ResolveGit"]
             for flag, value in (("ExcludeSessionId", excluded), ("Label", label), ("GitHubLogin", github_login)):
@@ -43,7 +50,11 @@ def collector(action, work, sources, excluded, label, github_login):
     else:
         interpreter = ["/usr/bin/perl", str(PACKAGE / "pulse-report.pl")] if sys.platform == "darwin" else [
             "sh", str(PACKAGE / "pulse-report-linux.sh")]
-        command = interpreter + ["--action", action, "--work-dir", str(work), "--server", PULSE]
+        command = interpreter + ["--action", action, "--server", PULSE]
+        if work is not None:
+            command += ["--work-dir", str(work)]
+        if project_key is not None:
+            command += ["--project-key", project_key]
         for source in sources:
             command += ["--only-source", source]
         if action == "Prepare":
@@ -95,60 +106,133 @@ def bind_project_channels():
     return results
 
 
-def publish_progress(work, report):
+def plain(text):
+    cleaned = re.sub(r"(?:https?://|(?:^|\s)[~/]|\b[A-Za-z]:[\\/])\S+", " ", str(text or ""))
+    cleaned = re.sub(r"[<>\[\]@#*_~`]", "", cleaned)
+    return " ".join(cleaned.split())[:200]
+
+
+def project_snapshot(project_key, sources):
+    sessions = []
+    project = None
+    for start in range(0, len(sources), 50):
+        inventory = collector("Inventory", None, sources[start:start + 50], project_key=project_key)
+        if not inventory.get("project"):
+            continue
+        if inventory["project"]["project_key"].lower() != project_key.lower():
+            raise ValueError("Project Pulse 返回的项目归属不匹配")
+        project = inventory["project"]
+        sessions.extend(inventory["sessions"])
+    if not project:
+        return None
+    status_labels = {"on_track": "在研", "blocked": "受阻", "completed": "已完成", "paused": "已暂停"}
+    status = status_labels.get((project.get("status") or {}).get("state"))
+    goal = plain(project.get("goal"))
+    milestones = [("已完成" if item["state"] == "completed" else "待完成") + " · " + plain(item["title"])
+                  for item in project.get("milestones") or []]
+    # Use one stable, bounded snapshot of the approved device's reported summaries.
+    ordered = sorted(sessions, key=lambda row: (str(row.get("observed_at") or ""), row["source_id"]), reverse=True)
+    progress = list(dict.fromkeys(plain(row["summary"]) for row in ordered if row.get("summary")))[:3]
+    if not status and not goal and not milestones and not progress:
+        return None
+    lines = [f"项目进展 · {plain(project_key)}"]
+    if status:
+        lines.append("状态 · " + status)
+    if goal:
+        lines.append("目标 · " + goal)
+    lines.extend(progress + milestones[:8])
+    return "\n\n".join(lines)
+
+
+def write_state(path, record):
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as stream:
+        json.dump(record, stream, ensure_ascii=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+
+
+@contextmanager
+def publication_lock():
+    PENDING.mkdir(mode=0o700, exist_ok=True)
+    with (PENDING / "ember-publication.lock").open("a+b") as lock:
+        if sys.platform == "win32":
+            import msvcrt
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+
+
+def publish_progress():
+    approved_sources()
     selection = json.loads((PACKAGE / ".pulse-project-selection.json").read_text(encoding="utf-8-sig"))
-    targets = [project for project in selection["projects"] if project.get("ember_room_id") and project.get("ember_publish") is not False]
-    if not targets or not report["submitted_batches"]:
+    targets = [p for p in selection["projects"] if p.get("ember_room_id") and p.get("ember_publish") is not False]
+    if not targets:
         return []
-
-    connector = load_connector()
-    rooms = {row["id"]: row for row in connector.call_tool("list_rooms", {})["rooms"] if row["kind"] != "direct"}
-    batches = [json.loads((work / (str(uuid.UUID(row["batch_id"])) + ".json")).read_text(encoding="utf-8-sig"))
-               for row in report["receipts"]]
-
-    def plain(text):
-        return re.sub(r"[<>\[\]@#*_~`]", "", " ".join(str(text or "").split()))[:200]
-
     results = []
-    for project in targets:
-        room_id = project["ember_room_id"]
-        label = plain(project.get("repository") or project.get("workspace_name"))
-        if room_id not in rooms:
-            results.append({"project": label, "status": "频道不可访问"})
-            continue
-        allowed = {source.lower() for source in project["source_ids"]}
-        project_keys = {key.lower() for key in [project.get("repository"), project.get("workspace_name"),
-                                                 *project.get("repositories", [])] if key}
-        published = [batch for batch in batches if batch["cursor"]["source_id"].lower() in allowed
-                     and any((session.get("repository") or session.get("workspace_name") or "").lower() in project_keys
-                             for session in batch["sessions"])]
-        progress = sorted({plain(row["summary"]) for batch in published for row in batch["summaries"]} - {""})
-        milestones = sorted({("已完成" if item["state"] == "completed" else "待完成") + " · " + plain(item["title"])
-                             for batch in published for row in batch["projects"] for item in row["milestones"]})
-        if not progress and not milestones:
-            continue
-        lines = [f"项目进展 · {label}", *progress[:3], *milestones[:8]]
-        body = "\n\n".join(lines)
-        digest = hashlib.sha256(body.encode()).hexdigest()
-        update_id = digest[:12]
-        receipt_key = hashlib.sha256(f"{label}/{room_id}".encode()).hexdigest()[:20]
-        receipt = PENDING / ("ember-" + receipt_key + ".json")
-        if receipt.exists() and json.loads(receipt.read_text()).get("digest") == digest:
-            continue
-        # Check before posting so a lost response does not cause an immediate duplicate.
-        previous = connector.call_tool("read_room", {"room_id": room_id})
-        if not any(update_id in message["text"] for message in previous["messages"]):
-            connector.call_tool("send_message", {"room_id": room_id, "text": body + "\n\n同步编号 " + update_id})
-        saved = receipt.with_suffix(".tmp")
-        saved.write_text(json.dumps({"digest": digest}), encoding="utf-8")
-        saved.replace(receipt)
-        results.append({"project": label, "status": "已同步", "channel": f"{EMBER}/rooms/{room_id}"})
+    with publication_lock():
+        connector = load_connector()
+        for project in targets:
+            room_id = project["ember_room_id"]
+            label = project.get("repository") or project["workspace_name"]
+            result = {"project": label, "channel": f"{EMBER}/rooms/{room_id}"}
+            results.append(result)
+            try:
+                sources = sorted({str(uuid.UUID(source)) for source in project["source_ids"]})
+                sync_project(connector, result, label, room_id, sources)
+            except (ValueError, OSError, KeyError, RuntimeError, StopIteration, subprocess.SubprocessError) as exc:
+                result.update(status="待补发", error=str(exc))
     return results
+
+
+def sync_project(connector, result, label, room_id, sources):
+    # A changed project selection must never publish an older, differently scoped snapshot.
+    scope = hashlib.sha256(json.dumps([label.lower(), room_id, sources]).encode()).hexdigest()
+    key = hashlib.sha256(json.dumps([label.lower(), room_id]).encode()).hexdigest()[:20]
+    path = PENDING / ("ember-" + key + ".json")
+    state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    pending = state.get("pending")
+    if pending and pending["scope"] != scope:
+        pending = None
+    try:
+        body = project_snapshot(label, sources)
+    except (ValueError, OSError, KeyError, subprocess.SubprocessError):
+        if not pending:
+            raise
+        body = None
+    if body:
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        if state.get("digest") == digest:
+            pending = None
+        elif not pending or pending["digest"] != digest:
+            pending = {"scope": scope, "digest": digest, "body": body}
+        # Persist the verified snapshot before attempting the network operation.
+        if pending != state.get("pending"):
+            write_state(path, {**state, "pending": pending})
+    if not pending:
+        result["status"] = "无新进展" if body else "暂无已核实进展"
+        return
+    update_id = "pulse" + pending["digest"][:16]
+    previous = connector.call_tool("read_room", {"room_id": room_id})
+    seen = any("同步编号 " + update_id in message["text"] for message in previous["messages"])
+    if not seen and pending.get("attempted_at"):
+        matches = connector.call_tool("search_messages", {"room_id": room_id, "words": update_id})
+        seen = bool(matches["matches"])
+    if not seen:
+        pending["attempted_at"] = datetime.now(timezone.utc).isoformat()
+        write_state(path, {**state, "pending": pending})
+        connector.call_tool("send_message", {"room_id": room_id, "text": pending["body"] + "\n\n同步编号 " + update_id})
+    write_state(path, {"digest": pending["digest"], "pending": None})
+    result["status"] = "已同步"
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["links", "bind-channels", "prepare", "submit"])
+    parser.add_argument("action", choices=["links", "bind-channels", "sync-ember", "prepare", "submit"])
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--exclude-session-id", type=lambda value: str(uuid.UUID(value)))
     parser.add_argument("--label")
@@ -158,6 +242,9 @@ def main():
     try:
         if args.action == "bind-channels":
             result["channels"] = bind_project_channels()
+            result["ember_posts"] = publish_progress()
+        elif args.action == "sync-ember":
+            result["ember_posts"] = publish_progress()
         elif args.action != "links":
             sources = approved_sources()
             if args.action == "prepare":
@@ -172,7 +259,7 @@ def main():
                                          args.label, args.github_login)
             if args.action == "submit":
                 try:
-                    result["ember_posts"] = publish_progress(work, result["report"])
+                    result["ember_posts"] = publish_progress()
                 except (ValueError, OSError, KeyError, RuntimeError, StopIteration) as exc:
                     result["ember_error"] = str(exc)
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as exc:
