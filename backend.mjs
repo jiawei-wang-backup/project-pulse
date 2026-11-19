@@ -535,11 +535,18 @@ async function reportInventory(pool, token, lan, params) {
   if (device?.revoked_at || (!device && !lan)) fail(401,'invalid_device');
   const sources=await pool.query(`SELECT s.session_id AS source_id,coalesce(r.full_name,s.workspace_name) AS project_key,
       s.repository_id,coalesce(c.byte_offset,0)::text AS offset,x.summary,
-      s.project_state AS state,s.reason_code,s.observed_at,s.project_evidence AS evidence
+      s.project_state AS state,s.reason_code,s.observed_at,s.project_evidence AS evidence,y.project_report
     FROM sessions s LEFT JOIN repositories r USING(repository_id)
     LEFT JOIN report_cursors c ON c.device_id=s.device_id AND c.source_id=s.session_id
     LEFT JOIN LATERAL (SELECT summary FROM session_summaries x WHERE x.device_id=s.device_id AND x.session_id=s.session_id
       ORDER BY observed_at DESC,summary_id LIMIT 1) x ON true
+    LEFT JOIN LATERAL (
+      SELECT jsonb_build_object('goal',p.goal,'milestones',p.milestones,'modules',p.modules,'observed_at',p.observed_at) AS project_report
+      FROM project_reports p
+      WHERE p.device_id=s.device_id AND p.source_session_id=s.session_id
+        AND lower(p.project_key)=lower(coalesce(r.full_name,s.workspace_name))
+      ORDER BY p.observed_at DESC,p.report_id DESC LIMIT 1
+    ) y ON true
     WHERE s.device_id=$1 AND s.session_id=ANY($2::uuid[])`,[device?.device_id ?? null,ids]);
   const matches=sources.rows.filter(row=>row.project_key?.toLowerCase()===key.toLowerCase());
   const conflicts=sources.rows.filter(row=>row.project_key?.toLowerCase()!==key.toLowerCase())
