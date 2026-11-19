@@ -8,6 +8,7 @@ import { isRunningAgent } from '../src/live-projects.js';
 const saved = JSON.parse(await readFile(new URL('../.pulse/dashboard-mirror/current.json', import.meta.url)));
 const api = createApi({lanEnrollment:true});
 const pool = new pg.Pool({connectionString:process.env.DATABASE_URL, max:4});
+const versionedPackage = 'project-pulse-report-3.6.0-lan.zip';
 const packagePath = new URL('../../project-pulse-report-local-lan.zip', import.meta.url);
 
 // For a replayed session or PR, keep the newest actual observation.
@@ -76,9 +77,13 @@ const server = createPreviewServer({
         }));
         return;
       }
-      if (url.pathname === '/api/v1/client-package' && req.method === 'GET') {
-        const file = await readFile(packagePath);
-        res.writeHead(200,{'Content-Type':'application/zip','Content-Disposition':'attachment; filename="project-pulse-report-local-lan.zip"'}).end(file);
+      const versionedDownload = url.pathname === '/api/v1/downloads/' + versionedPackage;
+      if (url.pathname === '/api/v1/client-package' || versionedDownload) {
+        if (!['GET', 'HEAD'].includes(req.method)) return res.writeHead(405, {Allow:'GET, HEAD'}).end();
+        const filename = versionedDownload ? versionedPackage : 'project-pulse-report-local-lan.zip';
+        const file = await readFile(versionedDownload ? new URL('../../' + filename, import.meta.url) : packagePath);
+        res.writeHead(200, {'Content-Type':'application/zip', 'Content-Length':file.length,
+          'Content-Disposition':`attachment; filename="${filename}"`}).end(req.method === 'HEAD' ? undefined : file);
         return;
       }
       if (url.pathname !== '/api/v1/dashboard') return await api.handle(req,res,url);
