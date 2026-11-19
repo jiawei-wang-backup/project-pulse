@@ -8,7 +8,14 @@
 
 ## 下载上报包
 
-**[下载最新上报 ZIP：project-pulse-report-3.6.0.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.6.0-20261117/project-pulse-report-3.6.0.zip)**
+**[下载新版中文局域网接入 ZIP](http://192.168.20.47:4185/api/v1/client-package)**
+
+解压后用 Codex 打开文件夹，把下面的提示词发给它。收到授权链接后，用本人账号登录 Ember 并点「允许」。首次使用时如需信任 HTTPS 证书，按 ZIP 内的 README 操作。
+
+```text
+读取当前目录的 README.md、PROMPT.txt 和 project-selection.md。先核对 ZIP 内 SHA256SUMS，确认服务端是局域网 Ember 及 Project Pulse。执行包内 ember-connect.py 的 connect 命令，在运行期间把输出的 Ember 授权链接交给我。我会用本人账号登录并在网页上决定是否允许。授权成功后，配置本机 Codex 的 ember-cn 连接，并说明如何重新打开会话检查是否能读取频道。请勿替我同意授权，也不要索取登录凭证。
+如果我要接入项目上报，请先按 PROMPT.txt 只读列出本机项目，等我明确选择后再试报。若只需要连接 Ember，网页授权完成即可。
+```
 
 当前版本：**3.6.0**。
 
@@ -24,7 +31,7 @@
 
 同一个 ZIP 包含 macOS、Windows、Linux 脚本，完整提示词、协议、升级说明和逐文件 SHA-256 校验和。成员电脑只需要上报包，不需要克隆完整项目、安装数据库或启动服务端。当前局域网快速流程无需手填设备令牌或创建 `~/.project-pulse/config.json`。
 
-## 拿到 ZIP 后怎么用
+## 仅配置项目上报
 
 1. 解压到长期保留的目录，例如 `Documents/project-pulse-report`。不要在 ZIP 预览或临时目录里运行。
 2. 用这台电脑上的 Codex 打开解压后的 `project-pulse-report` 文件夹。
@@ -37,7 +44,7 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，先�
 
 我授权你识别本机 Codex 主会话及相关项目、成员、GitHub仓库和PR、模型与真实Token用量，并生成脱敏摘要、项目目标和里程碑。先主动查找并复用已有信息，仍缺信息或证据冲突时，再集中询问我。排除当前上报会话，不编造数据。
 
-使用包内对应系统的固定脚本，向 http://192.168.16.70:4185 增量上报。一个所选业务项目可关联多个仓库：查证每个真实仓库及数字ID，按README写repositories.json；PR按实际仓库与编号提交，不伪造单仓库归属。先核对服务端multi_repository_projects能力。PR也要按README查证并结构化提交，分别核对日志、Token和PR回执。
+使用包内对应系统的固定脚本，向 http://192.168.20.47:4185 增量上报。一个所选业务项目可关联多个仓库：查证每个真实仓库及数字ID，按README写repositories.json；PR按实际仓库与编号提交，不伪造单仓库归属。先核对服务端multi_repository_projects能力。PR也要按README查证并结构化提交，分别核对日志、Token和PR回执。
 
 每轮先读私有项目选择，并用 Inventory 查询所选项目和本机已授权会话在面板上的已有信息与缺项，再开始准备上报。只补有证据的缺项和经确认的新信息。已有内容、项目归属或待发批次与本机证据冲突时，先列出差异询问用户，等待确认再处理冲突项。定时运行把问题留在结果里，继续同步范围内其余无冲突数据。提交后重新查询核对。
 
@@ -52,7 +59,7 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，先�
 最后报告实际识别及提交结果、Token与PR核验结果、积压和缺失信息，以及任务标识、启用状态和计划规则。无法上报或无法设置任务时明确说明失败步骤和原因，不得宣称全部完成。
 ```
 
-当前服务端是 `http://192.168.16.70:4185`，客户端必须能访问它。客户端自己的 IP 不是服务端地址，不要替换。私有仓库与 PR 使用本机已授权的 GitHub 只读工具；权限不足时由 Codex 说明缺少什么，不把凭证发进聊天。
+当前服务端是 `http://192.168.20.47:4185`，客户端必须能访问它。客户端自己的 IP 不是服务端地址，不要替换。私有仓库与 PR 使用本机已授权的 GitHub 只读工具；权限不足时由 Codex 说明缺少什么，不把凭证发进聊天。
 
 ## 同步哪些数据
 
