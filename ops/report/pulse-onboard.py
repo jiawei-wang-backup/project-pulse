@@ -55,15 +55,53 @@ def collector(action, work, sources, excluded, label, github_login):
     return json.loads(raw)
 
 
-def publish_progress(work, report):
-    selection = json.loads((PACKAGE / ".pulse-project-selection.json").read_text(encoding="utf-8-sig"))
-    targets = [project for project in selection["projects"] if project.get("ember_room_id")]
-    if not targets or not report["submitted_batches"]:
-        return []
-
+def load_connector():
     spec = importlib.util.spec_from_file_location("ember_connect", PACKAGE / "ember-connect.py")
     connector = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(connector)
+    return connector
+
+
+def bind_project_channels():
+    approved_sources()
+    path = PACKAGE / ".pulse-project-selection.json"
+    selection = json.loads(path.read_text(encoding="utf-8-sig"))
+    connector = load_connector()
+    results = []
+    projects = [project for project in selection["projects"] if project.get("ember_publish") is not False]
+    if not projects:
+        return results
+    rooms = {row["id"]: row for row in connector.call_tool("list_rooms", {})["rooms"] if row["kind"] != "direct"}
+    for project in projects:
+        repository = project.get("repository")
+        try:
+            room_id = project.get("ember_room_id")
+            if room_id:
+                if room_id not in rooms:
+                    raise ValueError("已绑定频道不可访问，请核对授权或频道成员")
+            elif repository and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+                room = connector.call_tool("create_project_channel", {"repository": repository})["room"]
+                room_id = room["id"]
+                project["ember_room_id"] = room_id
+                save = path.with_suffix(".tmp")
+                save.write_text(json.dumps(selection, ensure_ascii=True), encoding="utf-8")
+                save.chmod(0o600)
+                save.replace(path)
+            else:
+                raise ValueError("缺少已核实的 GitHub 仓库")
+            results.append({"project": repository, "channel": f"{EMBER}/rooms/{room_id}"})
+        except (ValueError, OSError, KeyError, StopIteration) as exc:
+            results.append({"project": repository, "error": str(exc)})
+    return results
+
+
+def publish_progress(work, report):
+    selection = json.loads((PACKAGE / ".pulse-project-selection.json").read_text(encoding="utf-8-sig"))
+    targets = [project for project in selection["projects"] if project.get("ember_room_id") and project.get("ember_publish") is not False]
+    if not targets or not report["submitted_batches"]:
+        return []
+
+    connector = load_connector()
     rooms = {row["id"]: row for row in connector.call_tool("list_rooms", {})["rooms"] if row["kind"] != "direct"}
     batches = [json.loads((work / (str(uuid.UUID(row["batch_id"])) + ".json")).read_text(encoding="utf-8-sig"))
                for row in report["receipts"]]
@@ -110,7 +148,7 @@ def publish_progress(work, report):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["links", "prepare", "submit"])
+    parser.add_argument("action", choices=["links", "bind-channels", "prepare", "submit"])
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--exclude-session-id", type=lambda value: str(uuid.UUID(value)))
     parser.add_argument("--label")
@@ -118,7 +156,9 @@ def main():
     args = parser.parse_args()
     result = {"ember": EMBER, "project_pulse": PULSE}
     try:
-        if args.action != "links":
+        if args.action == "bind-channels":
+            result["channels"] = bind_project_channels()
+        elif args.action != "links":
             sources = approved_sources()
             if args.action == "prepare":
                 PENDING.mkdir(mode=0o700, exist_ok=True)
