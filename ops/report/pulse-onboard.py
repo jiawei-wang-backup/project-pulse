@@ -8,6 +8,7 @@ import hashlib
 import importlib.util
 import re
 from pathlib import Path
+import shutil
 import subprocess
 import time
 import sys
@@ -17,12 +18,18 @@ PULSE = "http://192.168.20.47:4185"
 EMBER = "http://192.168.20.47:5174"
 PACKAGE = Path(__file__).resolve().parent
 PENDING = PACKAGE / ".pulse-pending"
+PAIRED_SCOPE = "uploaded-sessions"
 
 
-def approved_sources():
+def approved_sources(*, require_channels=False):
     selection = json.loads((PACKAGE / ".pulse-project-selection.json").read_text(encoding="utf-8-sig"))
     if selection.get("schema_version") != 1 or not selection.get("confirmed_at"):
         raise ValueError("需要先确认项目范围")
+    if require_channels and selection.get("ember_paired") == PAIRED_SCOPE:
+        missing = [project.get("repository") or project["workspace_name"] for project in selection["projects"]
+                   if not project.get("ember_room_id")]
+        if missing:
+            raise ValueError("请先绑定这些项目的 Ember 频道：" + "、".join(missing))
     sources = sorted({str(uuid.UUID(source)) for project in selection["projects"] for source in project["source_ids"]})
     if not sources:
         raise ValueError("没有获准上报的会话")
@@ -80,7 +87,8 @@ def bind_project_channels():
     selection = json.loads(path.read_text(encoding="utf-8-sig"))
     connector = load_connector()
     results = []
-    projects = [project for project in selection["projects"] if project.get("ember_publish") is not False]
+    paired = selection.get("ember_paired") == PAIRED_SCOPE
+    projects = [project for project in selection["projects"] if paired or project.get("ember_publish") is not False]
     if not projects:
         return results
     rooms = {row["id"]: row for row in connector.call_tool("list_rooms", {})["rooms"] if row["kind"] != "direct"}
@@ -113,17 +121,25 @@ def plain(text):
     return " ".join(cleaned.split())[:200]
 
 
-def project_snapshot(project_key, sources):
+def reported_project_sessions(project_key, sources):
     sessions = []
     project = None
     for start in range(0, len(sources), 50):
-        inventory = collector("Inventory", None, sources[start:start + 50], project_key=project_key)
+        batch = sources[start:start + 50]
+        inventory = collector("Inventory", None, batch, project_key=project_key)
         if not inventory.get("project"):
             continue
         if inventory["project"]["project_key"].lower() != project_key.lower():
             raise ValueError("Project Pulse 返回的项目归属不匹配")
         project = inventory["project"]
-        sessions.extend(inventory["sessions"])
+        allowed = set(batch)
+        sessions.extend(row for row in inventory["sessions"]
+                        if row["source_id"].lower() in allowed and row["project_key"].lower() == project_key.lower())
+    return project, sessions
+
+
+def project_snapshot(project_key, sources):
+    project, sessions = reported_project_sessions(project_key, sources)
     if not project:
         return None
     status_labels = {"on_track": "在研", "blocked": "受阻", "completed": "已完成", "paused": "已暂停"}
@@ -171,7 +187,8 @@ def publication_lock():
 def publish_progress():
     approved_sources()
     selection = json.loads((PACKAGE / ".pulse-project-selection.json").read_text(encoding="utf-8-sig"))
-    targets = [p for p in selection["projects"] if p.get("ember_room_id") and p.get("ember_publish") is not False]
+    paired = selection.get("ember_paired") == PAIRED_SCOPE
+    targets = [p for p in selection["projects"] if p.get("ember_room_id") and (paired or p.get("ember_publish") is not False)]
     if not targets:
         return []
     results = []
@@ -234,8 +251,26 @@ def sync_project(connector, result, label, room_id, sources):
 def start_listener():
     approved_sources()
     selection = json.loads((PACKAGE / ".pulse-project-selection.json").read_text(encoding="utf-8-sig"))
-    if not any(p.get("ember_room_id") and p.get("ember_member_reply") is True for p in selection["projects"]):
-        return "未启用"
+    if selection.get("ember_paired") != PAIRED_SCOPE:
+        return "请用新版接入提示词确认项目"
+    projects = selection["projects"]
+    rooms = {p.get("ember_room_id") for p in projects}
+    if not all(isinstance(room, str) and room for room in rooms):
+        raise ValueError("启用本机代答的项目仍有频道未绑定")
+    codex = shutil.which("codex")
+    if not codex:
+        raise OSError("找不到本机 Codex CLI")
+    status = subprocess.run([codex, "login", "status"], cwd=PACKAGE, timeout=15,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if status.returncode:
+        raise ValueError("本机 Codex CLI 尚未登录，请登录后重试")
+    connector = load_connector()
+    response = connector.mcp({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, "2025-06-18")
+    tools = {tool["name"] for tool in (response or {}).get("result", {}).get("tools", [])}
+    if not {"read_room", "send_message"} <= tools:
+        raise ValueError("Ember 网页授权缺少读取频道或发送消息权限")
+    for room in sorted(rooms):
+        connector.call_tool("read_room", {"room_id": room})
     PENDING.mkdir(mode=0o700, exist_ok=True)
     options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS} if sys.platform == "win32" else {"start_new_session": True}
     with (PENDING / "ember-member-listener.log").open("ab") as log:
@@ -246,6 +281,14 @@ def start_listener():
     if exit_code not in (None, 3):
         raise OSError("本机 Codex 监听启动失败，请查看 .pulse-pending/ember-member-listener.log")
     return "已运行"
+
+
+def check_listener(result):
+    try:
+        result["ember_member_listener"] = start_listener()
+    except (ValueError, OSError, KeyError, StopIteration, subprocess.SubprocessError) as exc:
+        result["ember_member_listener"] = "未就绪"
+        result["ember_member_listener_error"] = str(exc)
 
 
 def main():
@@ -260,13 +303,17 @@ def main():
     try:
         if args.action == "bind-channels":
             result["channels"] = bind_project_channels()
+            if any("error" in channel for channel in result["channels"]):
+                raise ValueError("部分项目频道未绑定，请核对频道权限和仓库归属后重试")
+            check_listener(result)
             result["ember_posts"] = publish_progress()
         elif args.action == "sync-ember":
+            check_listener(result)
             result["ember_posts"] = publish_progress()
         elif args.action == "start-listener":
-            result["ember_member_listener"] = start_listener()
+            check_listener(result)
         elif args.action != "links":
-            sources = approved_sources()
+            sources = approved_sources(require_channels=True)
             if args.action == "prepare":
                 PENDING.mkdir(mode=0o700, exist_ok=True)
                 work = PENDING / uuid.uuid4().hex
@@ -285,7 +332,7 @@ def main():
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as exc:
         result["error"] = str(exc)
     print(json.dumps(result, ensure_ascii=True))
-    return 1 if "error" in result else 0
+    return 1 if "error" in result or (args.action == "start-listener" and "ember_member_listener_error" in result) else 0
 
 
 if __name__ == "__main__":

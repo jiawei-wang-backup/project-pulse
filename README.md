@@ -8,26 +8,26 @@
 
 ## 下载上报包
 
-**[下载中文局域网接入包 v3.6.0-r5（ZIP）](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.6.0-20261117/project-pulse-report-3.6.0-lan-r5.zip)**
+**[下载中文局域网接入包 v3.6.0-r8（ZIP）](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.6.0-20261117/project-pulse-report-3.6.0-lan-r8.zip)**
 
 ZIP 可直接从 GitHub 下载。解压后，授权和上报需要连接团队局域网。
 
-解压后，用 Codex 打开目录并发下面的提示词。选好项目并完成网页授权后，Codex 会为新项目创建私有频道，继续试报、发布脱敏进展并设置自动同步。中文局域网的新项目频道默认加入所有活跃成员和普通机器人。首次使用时如需信任 HTTPS 证书，按 ZIP 内说明操作。
+解压后，用 Codex 打开目录并发下面的提示词。只需选择项目编号并完成一次 Ember 网页授权。每个选中的项目同时接入 Project Pulse 看板和对应的 Ember 频道，默认开启本机 Codex 代答，回答范围限于本机已上传且属于该项目的会话摘要。新项目频道默认加入所有活跃成员和普通机器人。首次使用时如需信任 HTTPS 证书，按 ZIP 内说明操作。
 
 绑定频道后会自动同步首份项目快照，只有状态变化也能更新。Ember 暂时不可用时，保留待发布状态供下一轮补发。
 
 ```text
 请直接完成接入。用当前解压目录的 README.md、PROMPT.txt、project-selection.md 和包内工具，不要让我手填服务端地址、编辑配置或另发提示词。
 
-运行 pulse-onboard.py links 核对两个服务端并记下地址。只读识别本机项目，在同一条消息列出编号，请我选择要同步的项目，并说明新项目会自动创建「项目频道」，默认加入工作区当前成员和普通机器人。询问是否同时允许本机 Codex 使用所选项目 README 为其他成员 @ 本人时公开代答。允许指定已有频道或只上报到看板。不要默认全选。
+运行 pulse-onboard.py links 取得两个服务端地址。只读识别本机项目，在一条消息里列出有已核实 GitHub 仓库的候选项目，请我只回复要接入的项目编号。确认前说明：每个选中的项目都会绑定 Project Pulse 看板和对应的 Ember 项目频道，并默认开启本机 Codex 代答。其他成员在该频道 @ 本人时，Codex 只用本机已上传且服务端确认属于当前项目的会话摘要回答。新项目频道默认加入工作区当前成员和普通机器人。不要提供单独接入看板或频道的选项，也不要另问是否开启代答。仓库归属待核实的项目先标明原因，不直接接入。不要默认全选。
 
-根据我的选择保存私有 .pulse-project-selection.json。只上报到看板的项目记录 ember_publish: false；只有我指定已有频道时才手动匹配并写入 ember_room_id。需要同步 Ember 时运行 ember-connect.py connect --project-channels，命令会尝试自动打开浏览器，并输出备用 HTTPS 链接。请我在同一授权页允许发消息，并勾选私有频道和创建私有项目频道。不要代我授权或索取凭证。授权后调用 pulse-onboard.py bind-channels，按已核实的 GitHub 仓库创建新项目频道或复用对应的私有项目频道。绑定后脚本会自动同步已核实的项目快照。如果我启用了本机代答，在对应项目记录 ember_member_reply: true，并核对 workspace_aliases 是我已确认的本机项目目录，然后运行 pulse-onboard.py start-listener。有待补发时保留本机状态。
+我回复项目编号后，保存私有 .pulse-project-selection.json，保留 schema_version: 1，在顶层记录 "ember_paired": "uploaded-sessions"。只保存已选项目，核对 workspace_aliases 为已确认的采集目录，保留已核实的原项目频道绑定。升级时停掉原解压目录启动的旧版 ember-member-listener.py 进程，移除每个项目旧的 ember_member_reply、ember_publish 字段，保留原任务和续传状态。运行 ember-connect.py connect --project-channels，命令会尝试自动打开浏览器并输出备用 HTTPS 链接。请我在同一授权页允许发消息，并勾选私有频道和创建私有项目频道。不要代我授权或索取凭证。授权后运行 pulse-onboard.py bind-channels，按仓库关联项目频道，检查读写授权，启动代答并同步项目快照。频道未绑定成功时先修复绑定，再继续试报。检查 ember_member_listener；如果返回未就绪，按 ember_member_listener_error 处理。
 
 随后立即按 PROMPT.txt 完成试报。运行 pulse-onboard.py prepare，使用真实的本轮会话 UUID 排除接入会话。根据返回的脱敏证据在 work_dir 中准备有依据的 summaries.json、pulls.json 和 statuses.json；有新进展就写项目目标和里程碑。随后运行 pulse-onboard.py submit --work-dir <本轮返回目录>。脚本会核对 Project Pulse 回执，并把已提交的脱敏进展发布到已绑定的 Ember 频道。核对 report、ember_posts 和 ember_error。没有新日志但项目状态变化时也要提交状态，脚本会读取服务端更新并同步。Ember 临时失败时保留待发布状态，下轮自动补发。同一项目进展不重复发。不要把网页授权成功当成发布成功。
 
-试报后用可用的定时任务工具创建或更新原有的「Project Pulse 每30分钟上报」，在本目录用同一 prepare、整理、submit 流程。即使本轮没有新日志，也要运行 sync-ember 来核对状态和补发。如果启用了代答，每轮运行 start-listener 检查客户端监听。以后沿用已确认的项目和频道，不重复询问，也不自行加入其他项目或改频道。任务工具不可用时保留已完成的试报并说明限制。
+试报后用可用的定时任务工具创建或更新原有的「Project Pulse 每30分钟上报」，在本目录用同一 prepare、整理、submit 流程。即使本轮没有新日志，也要运行 sync-ember 来核对状态和补发。sync-ember 会同时检查并恢复已启用的代答监听。以后沿用已确认的项目和频道，不重复询问，也不自行加入其他项目或改频道。任务工具不可用时保留已完成的试报并说明限制。
 
-结束时主动给出可点击的 Ember 工作区、已同步频道及 Project Pulse 看板链接（取自脚本结果），并分别说明看板回执、Ember 发布、定时任务是否成功。失败时也返回服务端地址和实际卡住的步骤。
+结束时主动给出可点击的 Ember 工作区、已同步频道及 Project Pulse 看板链接（取自脚本结果），并分别说明看板回执、Ember 发布、定时任务、@成员代答就绪状态。说明代答需要本机在线；没有收到另一位成员的真实 @ 并回覆前，不宣称已验证群聊代答。失败时也返回服务端地址和实际卡住的步骤。
 ```
 
 当前版本：**3.6.0**。
