@@ -9,6 +9,7 @@ import importlib.util
 import re
 from pathlib import Path
 import subprocess
+import time
 import sys
 import uuid
 
@@ -230,9 +231,26 @@ def sync_project(connector, result, label, room_id, sources):
     result["status"] = "已同步"
 
 
+def start_listener():
+    approved_sources()
+    selection = json.loads((PACKAGE / ".pulse-project-selection.json").read_text(encoding="utf-8-sig"))
+    if not any(p.get("ember_room_id") and p.get("ember_member_reply") is True for p in selection["projects"]):
+        return "未启用"
+    PENDING.mkdir(mode=0o700, exist_ok=True)
+    options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS} if sys.platform == "win32" else {"start_new_session": True}
+    with (PENDING / "ember-member-listener.log").open("ab") as log:
+        process = subprocess.Popen([sys.executable, str(PACKAGE / "ember-member-listener.py")], stdin=subprocess.DEVNULL,
+                                   stdout=log, stderr=log, cwd=PACKAGE, **options)
+    time.sleep(1)
+    exit_code = process.poll()
+    if exit_code not in (None, 3):
+        raise OSError("本机 Codex 监听启动失败，请查看 .pulse-pending/ember-member-listener.log")
+    return "已运行"
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["links", "bind-channels", "sync-ember", "prepare", "submit"])
+    parser.add_argument("action", choices=["links", "bind-channels", "sync-ember", "start-listener", "prepare", "submit"])
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--exclude-session-id", type=lambda value: str(uuid.UUID(value)))
     parser.add_argument("--label")
@@ -245,6 +263,8 @@ def main():
             result["ember_posts"] = publish_progress()
         elif args.action == "sync-ember":
             result["ember_posts"] = publish_progress()
+        elif args.action == "start-listener":
+            result["ember_member_listener"] = start_listener()
         elif args.action != "links":
             sources = approved_sources()
             if args.action == "prepare":
