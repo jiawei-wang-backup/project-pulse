@@ -81,6 +81,17 @@ def load_connector():
     return connector
 
 
+def bind_reporting_member(result):
+    selection = json.loads((PACKAGE / ".pulse-project-selection.json").read_text(encoding="utf-8-sig"))
+    if selection.get("ember_paired") != PAIRED_SCOPE:
+        return
+    try:
+        proof = collector("DeviceProof", None, [])
+        result["ember_reporting_member"] = load_connector().call_tool("bind_pulse_device", proof)
+    except (ValueError, OSError, KeyError, StopIteration, subprocess.SubprocessError) as exc:
+        result["ember_reporting_member"] = {"status": "pending", "error": str(exc)}
+
+
 def bind_project_channels():
     approved_sources()
     path = PACKAGE / ".pulse-project-selection.json"
@@ -308,9 +319,11 @@ def main():
             result["channels"] = bind_project_channels()
             if any("error" in channel for channel in result["channels"]):
                 raise ValueError("部分项目频道未绑定，请核对频道权限和仓库归属后重试")
+            bind_reporting_member(result)
             check_listener(result)
             result["ember_posts"] = publish_progress()
         elif args.action == "sync-ember":
+            bind_reporting_member(result)
             check_listener(result)
             result["ember_posts"] = publish_progress()
         elif args.action == "start-listener":
@@ -328,6 +341,7 @@ def main():
             result["report"] = collector(args.action.capitalize(), work, sources, args.exclude_session_id,
                                          args.label, args.github_login)
             if args.action == "submit":
+                bind_reporting_member(result)
                 try:
                     result["ember_posts"] = publish_progress()
                 except (ValueError, OSError, KeyError, RuntimeError, StopIteration) as exc:

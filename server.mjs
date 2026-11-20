@@ -15,7 +15,7 @@ export function createPreviewServer(api = null, {reportOnly = false} = {}) {
     response.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     if (reportOnly && !(
       (request.method === 'GET' && ['/api/v1/report-cursor','/api/v1/report-inventory','/api/v1/report-directory','/api/v1/team-sessions','/api/v1/team-edits'].includes(request.url.split('?')[0])) ||
-      (request.method === 'POST' && ['/api/v1/reports','/api/v1/report-pulls','/api/v1/report-statuses','/api/v1/team-edits'].includes(request.url))
+      (request.method === 'POST' && ['/api/v1/reports','/api/v1/report-pulls','/api/v1/report-statuses','/api/v1/team-edits','/api/v1/ember-device-binding'].includes(request.url))
     )) {
       response.writeHead(404).end();
       return;

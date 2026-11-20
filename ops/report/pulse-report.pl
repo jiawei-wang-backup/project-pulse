@@ -25,8 +25,8 @@ GetOptions('action=s'=>\$action,'work-dir=s'=>\$work,'server=s'=>\$server,'label
     'state-dir=s'=>\$state_dir,'github-login=s'=>\$github_login,'resolve-git'=>\$resolve_git,
     'session-root=s@'=>\@session_roots,'project-map=s'=>\$project_map,'only-source=s@'=>\@only_sources,'project-key=s'=>\$project_key,'max-line-bytes=i'=>\$max_line_bytes) or die "Invalid options\n";
 die "MaxLineBytes must be between 1 MiB and 256 MiB\n" unless $max_line_bytes>=1048576 && $max_line_bytes<=268435456;
-die "Expected Inventory, Prepare, or Submit\n" unless $action =~ /\A(?:Inventory|Prepare|Submit)\z/;
-die "Prepare and Submit require --work-dir\n" unless $work || $action eq 'Inventory';
+die "Expected Inventory, Prepare, or Submit\n" unless $action =~ /\A(?:DeviceProof|Inventory|Prepare|Submit)\z/;
+die "Prepare and Submit require --work-dir\n" unless $work || $action eq 'Inventory' || $action eq 'DeviceProof';
 $work=abs_path($work) // File::Spec->rel2abs($work) if defined $work;
 $state_dir=File::Spec->rel2abs($state_dir);
 die "Invalid tool ID\n" unless $tool =~ /\A[a-z][a-z0-9_]{0,63}\z/;
@@ -60,6 +60,7 @@ if ($^O eq 'darwin') {
     }
 } else {die "Unsupported platform: $^O\n"}
 my $device = sha256_hex("$machine\n$<");
+if ($action eq 'DeviceProof') { print $json->encode({credential_digest=>sha256_hex("lan:$device")}); exit 0; }
 my $plan_file = defined $work ? "$work/plan.json" : undef;
 my @counts = qw(input_tokens cached_input_tokens output_tokens);
 

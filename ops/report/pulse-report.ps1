@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('Inventory','Prepare','Submit')][string]$Action = 'Prepare',
+    [ValidateSet('DeviceProof','Inventory','Prepare','Submit')][string]$Action = 'Prepare',
     [string]$WorkDir,
     [string]$ProjectKey,
     [string]$Server = 'http://192.168.16.70:4185',
@@ -99,6 +99,7 @@ $machine = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography').MachineGui
 $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 if (!$machine -or !$userSid) { throw 'Missing local device identity.' }
 $deviceKey = Hash "$machine`n$userSid"
+if ($Action -eq 'DeviceProof') { @{credential_digest=(Hash "lan:$deviceKey")} | ConvertTo-Json -Compress; return }
 if ($SummarizerTool -notmatch '^[a-z][a-z0-9_]{0,63}$') { throw 'Invalid summarizer tool ID.' }
 if ($Action -eq 'Inventory') {
     if (!$ProjectKey -or !$OnlySource.Count -or $OnlySource.Count -gt 50 -or
