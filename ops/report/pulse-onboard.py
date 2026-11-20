@@ -100,7 +100,10 @@ def bind_project_channels():
                 if room_id not in rooms:
                     raise ValueError("已绑定频道不可访问，请核对授权或频道成员")
             elif repository and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
-                room = connector.call_tool("create_project_channel", {"repository": repository})["room"]
+                arguments = {"repository": repository}
+                if project.get("project_name"):
+                    arguments["project_name"] = project["project_name"]
+                room = connector.call_tool("create_project_channel", arguments)["room"]
                 room_id = room["id"]
                 project["ember_room_id"] = room_id
                 save = path.with_suffix(".tmp")
