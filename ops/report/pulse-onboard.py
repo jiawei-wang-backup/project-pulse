@@ -70,7 +70,8 @@ def collector(action, work, sources, excluded=None, label=None, github_login=Non
             for flag, value in (("--exclude-session-id", excluded), ("--label", label), ("--github-login", github_login)):
                 if value:
                     command += [flag, value]
-    raw = subprocess.check_output(command, cwd=PACKAGE, encoding="utf-8-sig")
+    raw = subprocess.check_output(command, cwd=PACKAGE, encoding="utf-8-sig",
+                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return json.loads(raw)
 
 
@@ -275,7 +276,8 @@ def start_listener():
     if not codex:
         raise OSError("找不到本机 Codex CLI")
     status = subprocess.run([codex, "login", "status"], cwd=PACKAGE, timeout=15,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if status.returncode:
         raise ValueError("本机 Codex CLI 尚未登录，请登录后重试")
     connector = load_connector()
@@ -341,6 +343,7 @@ def main():
             result["report"] = collector(args.action.capitalize(), work, sources, args.exclude_session_id,
                                          args.label, args.github_login)
             if args.action == "submit":
+                (PENDING / "ember-context-revision").touch()
                 bind_reporting_member(result)
                 try:
                     result["ember_posts"] = publish_progress()
