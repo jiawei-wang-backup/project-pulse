@@ -14,8 +14,8 @@ import time
 import sys
 import uuid
 
-PULSE = "http://192.168.20.47:4185"
-EMBER = "http://192.168.20.47:5174"
+PULSE = "http://192.168.20.58:4185"
+EMBER = "http://192.168.20.58:5174"
 PACKAGE = Path(__file__).resolve().parent
 PENDING = PACKAGE / ".pulse-pending"
 PAIRED_SCOPE = "uploaded-sessions"
