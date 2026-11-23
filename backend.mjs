@@ -159,6 +159,16 @@ function lanIdentity(deviceKey, labelHeader, githubHeader) {
     name: label ? label + ' · ' + hex.slice(0,12) : placeholder};
 }
 
+// Preserve the first verified reporter. A verified device may replace a legacy
+// owner whose reporting device has never been linked to an Ember account.
+async function recordProjectOwner(client, key, deviceId) {
+  await client.query(`INSERT INTO project_owners(project_key,device_id) VALUES ($1,$2)
+    ON CONFLICT (project_key) DO UPDATE SET device_id=EXCLUDED.device_id
+    WHERE project_owners.device_id <> EXCLUDED.device_id
+      AND EXISTS (SELECT 1 FROM devices incoming WHERE incoming.device_id=EXCLUDED.device_id AND incoming.ember_member_id IS NOT NULL)
+      AND EXISTS (SELECT 1 FROM devices existing WHERE existing.device_id=project_owners.device_id AND existing.ember_member_id IS NULL)`,[key,deviceId]);
+}
+
 export async function bindEmberDevice(pool, { credential_digest, member_id, display_name } = {}) {
   if (!/^[a-f0-9]{64}$/.test(credential_digest ?? '') || !/^[a-z0-9]{16}$/.test(member_id ?? '') ||
       typeof display_name !== 'string' || !display_name.trim() || display_name.length > 160) {
@@ -175,6 +185,13 @@ export async function bindEmberDevice(pool, { credential_digest, member_id, disp
     await client.query(`INSERT INTO ember_members (member_id,display_name) VALUES ($1,$2)
       ON CONFLICT (member_id) DO UPDATE SET display_name=EXCLUDED.display_name`, [member_id,display_name]);
     await client.query('UPDATE devices SET ember_member_id=$1 WHERE device_id=$2', [member_id,device.device_id]);
+    const {rows: projects} = await client.query(`
+      SELECT lower(coalesce(r.full_name,s.workspace_name)) AS key
+        FROM sessions s LEFT JOIN repositories r USING(repository_id)
+        WHERE s.device_id=$1 AND coalesce(r.full_name,s.workspace_name) IS NOT NULL
+      UNION SELECT lower(project_key) FROM project_reports WHERE device_id=$1
+      ORDER BY key`,[device.device_id]);
+    for (const {key} of projects) await recordProjectOwner(client,key,device.device_id);
     await client.query('COMMIT');
     return {display_name};
   } catch (error) {
@@ -248,7 +265,7 @@ export async function ingest(pool, token, raw, lan = null) {
         ...(report.mappings || []).map(m => m.repository),
       ].filter(Boolean).map(key => key.toLowerCase()));
       for (const key of [...projectsReported].sort()) {
-        await client.query('INSERT INTO project_owners(project_key,device_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',[key,device_id]);
+        await recordProjectOwner(client,key,device_id);
       }
       for (const {tool,repository,project_observation,...session} of report.sessions) {
         const repo = repository ? await client.query("SELECT repository_id FROM repositories WHERE lower(github_host)='github.com' AND lower(full_name)=lower($1)",[repository]) : null;
@@ -454,7 +471,7 @@ export async function dashboard(pool, days, now = Date.now()) {
         WHERE v.member_key=d.member_key AND v.revoked_at IS NULL
         ORDER BY s.last_activity_at DESC NULLS LAST,v.last_seen_at DESC NULLS LAST LIMIT 1
       ) t ON true ORDER BY d.display_name,d.member_key`,[]],
-    [`SELECT r.repository_id,r.full_name,(SELECT v.display_name FROM project_owners po JOIN reporting_devices v USING(device_id) WHERE po.project_key=lower(r.full_name)) AS owner_name,r.business_category,
+    [`SELECT r.repository_id,r.full_name,(SELECT v.display_name FROM project_manager_names v WHERE v.project_key=lower(r.full_name)) AS owner_name,r.business_category,
       ARRAY(SELECT actual.full_name FROM business_project_repositories l JOIN repositories actual ON actual.repository_id=l.repository_id
         WHERE l.project_repository_id=r.repository_id ORDER BY actual.full_name) AS repositories,
       CASE WHEN r.completed_at IS NOT NULL THEN 'completed'
@@ -491,7 +508,7 @@ export async function dashboard(pool, days, now = Date.now()) {
       FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1 AND u.occurred_at <= $2
       GROUP BY day ORDER BY day`,[cutoff,end]],
     [`SELECT DISTINCT ON (lower(p.project_key)) coalesce(r.full_name,p.project_key) AS project_key,
-        p.goal,p.milestones,p.observed_at,p.summarizer_tool,(SELECT v.display_name FROM project_owners po JOIN reporting_devices v USING(device_id) WHERE po.project_key=lower(p.project_key)) AS owner_name,
+        p.goal,p.milestones,p.observed_at,p.summarizer_tool,(SELECT v.display_name FROM project_manager_names v WHERE v.project_key=lower(p.project_key)) AS owner_name,
         (SELECT m.modules FROM project_reports m WHERE lower(m.project_key)=lower(p.project_key) AND m.modules IS NOT NULL
           ORDER BY m.observed_at DESC,m.report_id DESC LIMIT 1) AS modules
       FROM project_reports p
@@ -508,7 +525,7 @@ export async function dashboard(pool, days, now = Date.now()) {
       sum(coalesce(u.output_tokens,0)) AS output_tokens
       FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1 AND u.occurred_at <= $2
       GROUP BY u.session_id`,[cutoff,end]],
-    [`SELECT v.member_key AS developer_id,v.display_name,r.full_name,s.workspace_name,(SELECT o.display_name FROM project_owners po JOIN reporting_devices o USING(device_id) WHERE po.project_key=lower(coalesce(r.full_name,s.workspace_name))) AS owner_name,count(DISTINCT s.session_id)::int AS session_count,
+    [`SELECT v.member_key AS developer_id,v.display_name,r.full_name,s.workspace_name,(SELECT o.display_name FROM project_manager_names o WHERE o.project_key=lower(coalesce(r.full_name,s.workspace_name))) AS owner_name,count(DISTINCT s.session_id)::int AS session_count,
       max(s.last_activity_at) AS last_activity_at
       FROM sessions s JOIN reporting_devices v USING(device_id)
       LEFT JOIN repositories r USING(repository_id)

@@ -332,6 +332,8 @@ try {
   assert.equal(workspace.rows[0].workspace_name,'unregistered/app');
   const updatedDirectory=await (await fetch(base+'/api/v1/report-directory',{headers:lanHeaders})).json();
   assert.equal(updatedDirectory.sources[0].source_id,lanSource);
+  // The imported owner has no verified Ember identity for this project yet.
+  await pool.query("UPDATE project_owners SET device_id=$1 WHERE project_key='unregistered/app'",[device]);
   process.env.PULSE_DEVICE_BIND_TOKEN=randomUUID();
   const identity={credential_digest:createHash('sha256').update('lan:'+lanKey).digest('hex'),member_id:'0000000000000001',display_name:'已授权的上报人'};
   const bind=member=>fetch(base+'/api/v1/ember-device-binding',{method:'POST',
@@ -339,6 +341,8 @@ try {
   assert.equal((await bind(identity)).status,200);
   assert.equal((await bind(identity)).status,200);
   assert.equal((await bind({...identity,member_id:'0000000000000002'})).status,409);
+  const {rows:[owner]}=await pool.query("SELECT device_id FROM project_owners WHERE project_key='unregistered/app'");
+  assert.notEqual(owner.device_id,device);
   const afterBinding=await (await fetch(base+'/api/v1/dashboard')).json();
   assert.equal(afterBinding.memberships.find(m=>m.workspace_name==='unregistered/app').owner_name,identity.display_name);
   console.log('PostgreSQL smoke test passed');
