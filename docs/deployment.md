@@ -19,7 +19,8 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f db/009_project_lifecycle.sql \
   -f db/010_team_edits.sql \
   -f db/011_project_repositories.sql \
-  -f db/012_project_modules.sql
+  -f db/012_project_modules.sql \
+  -f db/013_ember_device_members.sql
 ```
 
 已有库只执行尚未应用的迁移。通过部署环境提供DATABASE_URL，启动完整局域网看板：
@@ -51,3 +52,5 @@ PULSE_LAN_ENROLLMENT=1 PULSE_HOST=0.0.0.0 PORT=4185 npm start
 仅此模式需要用户私有目录中的 `.project-pulse/config.json`，包含server_url、device_token和sources；详见 [独立令牌上报配置](../.agents/skills/project-pulse-report/SETUP.md)。令牌只保存在对应设备，不发送到聊天或仓库。跨公网部署使用HTTPS反向代理，数据库留在内网。
 
 旧版Node客户端及其他来源适配属于兼容路径。当前ZIP固定脚本只采集Codex主会话，排除子Agent与归档来源；Claude Code等须另行授权并按手动协议处理。不能通过重置游标、清空待发请求或重新导入历史记录来切换采集模式。
+
+使用 Ember 自动归集设备时，为 Ember 与 Project Pulse 配置相同的独立服务密钥 `PULSE_DEVICE_BIND_TOKEN`。客户端使用 Ember 网页授权。

@@ -17,8 +17,10 @@ export function isRunningAgent(agent,now=Date.now()) {
   return agent.state==='unknown' && agent.is_running===true && age<=30*60000;
 }
 
-export function memberProjectKeys(data,name,projectKey,key='') {
-  const rows=[...(data.memberships||[]),...(data.sessions||[])].filter(row=>row.display_name===name);
+export const memberKey = row => row.member_key ?? row.developer_id ?? row.display_name;
+
+export function memberProjectKeys(data,member,projectKey,key='') {
+  const rows=[...(data.memberships||[]),...(data.sessions||[])].filter(row=>memberKey(row)===member);
   const names=[...new Set(rows.map(projectKey).filter(Boolean))];
   return key ? names.filter(project=>project===key) : names;
 }

@@ -8,7 +8,41 @@
 
 ## 下载上报包
 
-**[下载最新上报 ZIP：project-pulse-report-3.6.0-lan-r19.zip](https://github.com/jiawei-wang-backup/ember-cloudflare/releases/download/lan-client-v3.6.0-r19/project-pulse-report-3.6.0-lan-r19.zip)**
+**[下载中文局域网接入包 v3.6.0-r19（ZIP）](https://github.com/jiawei-wang-backup/ember-cloudflare/releases/download/lan-client-v3.6.0-r19/project-pulse-report-3.6.0-lan-r19.zip)** · [下载接入提示词](https://github.com/jiawei-wang-backup/ember-cloudflare/releases/download/lan-client-v3.6.0-r19/ember-lan-onboarding-r19.txt)
+
+ZIP 可直接从 GitHub 下载。解压后，授权和上报需要连接团队局域网。
+
+[Project Pulse 上报与看板 · 4185](http://192.168.16.70:4185) · [Ember 工作区 · 5174](http://192.168.16.70:5174) · [Ember HTTPS 授权 · 5443](https://192.168.16.70:5443)
+
+解压后，用 Codex 打开目录并发下面的提示词。只需选择项目编号并完成一次 Ember 网页授权。新频道用「中文项目名（英文仓库名）」命名。每个选中的项目同时接入 Project Pulse 看板和对应的 Ember 频道，默认开启本机 Codex 代答、24 小时历史续聊和 GitHub 只读代码分析。分析答复可供项目频道全员查看。新项目频道默认加入所有活跃成员和普通机器人。首次使用时如需信任 HTTPS 证书，按 ZIP 内说明操作。
+
+绑定频道后会自动同步首份项目快照，只有状态变化也能更新。Ember 暂时不可用时，保留待发布状态供下一轮补发。
+
+r19 使用 SSE 接收 @ 提问，支持排队、断线补收和多设备任务认领。已有成员可保留项目绑定、授权和续传记录，替换为 r19 脚本后重启监听。Windows 上的 Codex 和 GitHub CLI 后台任务会隐藏命令行窗口。
+
+```text
+请直接完成接入。用当前解压目录的 README.md、PROMPT.txt、project-selection.md 和包内工具，不要让我手填服务端地址、编辑配置或另发提示词。
+
+r19 使用 Ember 实时推送接收频道 @，收到后先入队，每台电脑一次处理一条。断线重连补收近 24 小时未完成的提问。同一成员有多台设备在线时，只由认领成功的一台执行。升级后请停止原监听，再运行新版监听。
+
+Windows 升级后先停掉旧版代答监听，再用新版脚本启动监听。后台执行 Codex 和 GitHub CLI 时隐藏命令行窗口。
+
+已授权 Ember 的设备在成功上报后会自动绑定到当前 Ember 成员。同一账号的多台设备会合在同一成员下统计。检查 ember_reporting_member，已有上报数据的设备可以执行 pulse-onboard.py sync-ember 补绑定。
+
+如果当前目录已有接入配置，保留项目绑定、授权和续传状态。升级时替换为 r19 的脚本并重启代答监听，检查 ember_member_listener 是否就绪。
+
+运行 pulse-onboard.py links 核对服务端地址。Project Pulse 看板和上报是 http://192.168.16.70:4185，Ember 工作区是 http://192.168.16.70:5174，Ember 网页授权是 https://192.168.16.70:5443。只读识别本机项目，在一条消息里列出有已核实 GitHub 仓库的候选项目，展示「中文项目名（英文仓库名）」，请我回复要接入的项目编号。优先沿用已有中文项目名，没有就按项目用途拟一个简短中文名。在同一条确认消息里展示，允许我改名。确认前说明：每个选中的项目都会绑定 Project Pulse 看板和对应的 Ember 项目频道，并默认开启本机 Codex 代答。其他成员在该频道 @ 本人时，Codex 只用本机已上传且服务端确认属于当前项目的会话摘要回答。新项目频道默认加入工作区当前成员和普通机器人。不要提供单独接入看板或频道的选项，也不要另问是否开启代答。在同一条确认消息里明确说明：我回复编号即确认接入该项目并默认开启 24 小时历史续聊，无需另回复「开启」。代答只读所选项目已上传且经服务端核验的指定 Codex 会话，提取与问题相关的本机对话片段；首次代答或距同一提问人上次成功代答满 24 小时重新读取。允许我同时指定关闭，例如「2」表示接入第 2 个项目并开启历史续聊，「2 关闭历史」表示接入第 2 个项目，代答仅使用已上传的摘要及关联报告。同一条确认消息还要说明：选中项目默认启用 GitHub 只读代码分析，复用这台电脑已有的 GitHub CLI 登录。架构、实现或 README 问题可读取本项目 GitHub 默认分支上相关的已提交文件，分析将回复到项目频道供全员查看，无需逐个验证频道成员的 GitHub 权限。「2 关闭代码分析」可单独关闭这项功能。未登录或仓库读权限不足时说明具体原因，继续其余接入流程。仓库归属待核实的项目先标明原因，不直接接入。不要默认全选。
+
+我回复项目编号后，保存私有 .pulse-project-selection.json，保留 schema_version: 1，在顶层记录 "ember_paired": "uploaded-sessions"。只保存已选项目，为每个项目写入 project_name，值仅为中文显示名，英文仓库名由 Ember 自动附在括号里；按这次确认对每个已选项目写入 ember_history: true，明确关闭的项目写入 ember_history: false；同时为选中项目默认写入 ember_github_analysis: true，明确关闭代码分析的写入 false；未收到本次选择前不得修改旧配置或读取旧会话原文；核对 workspace_aliases 为已确认的本机绝对项目目录，保留已核实的原项目频道绑定。升级时停掉原解压目录启动的旧版 ember-member-listener.py 进程，移除每个项目旧的 ember_member_reply、ember_publish 字段，保留原任务和续传状态。运行 ember-connect.py connect --project-channels，命令会尝试自动打开浏览器并输出备用 HTTPS 链接。请我在同一授权页允许发消息，并勾选私有频道和创建私有项目频道。不要代我授权或索取凭证。授权后运行 pulse-onboard.py bind-channels，按仓库关联项目频道，检查读写授权，启动代答并同步项目快照。频道未绑定成功时先修复绑定，再继续试报。检查 ember_member_listener；如果返回未就绪，按 ember_member_listener_error 处理。
+
+随后立即按 PROMPT.txt 完成试报。运行 pulse-onboard.py prepare，使用真实的本轮会话 UUID 排除接入会话。根据返回的脱敏证据在 work_dir 中准备有依据的 summaries.json、pulls.json 和 statuses.json；有新进展就写项目目标和里程碑。随后运行 pulse-onboard.py submit --work-dir <本轮返回目录>。脚本会核对 Project Pulse 回执，并把已提交的脱敏进展发布到已绑定的 Ember 频道。核对 report、ember_posts 和 ember_error。没有新日志但项目状态变化时也要提交状态，脚本会读取服务端更新并同步。Ember 临时失败时保留待发布状态，下轮自动补发。同一项目进展不重复发。不要把网页授权成功当成发布成功。
+
+试报后用可用的定时任务工具创建或更新原有的「Project Pulse 每30分钟上报」，在本目录用同一 prepare、整理、submit 流程。即使本轮没有新日志，也要运行 sync-ember 来核对状态和补发。sync-ember 会同时检查并恢复已启用的代答监听。以后沿用已确认的项目和频道，不重复询问，也不自行加入其他项目或改频道。任务工具不可用时保留已完成的试报并说明限制。
+
+结束时主动给出可点击的 Ember 工作区、已同步频道及 Project Pulse 看板链接（取自脚本结果），并分别说明看板回执、Ember 发布、定时任务、@成员代答就绪状态及各项目的历史续聊和 GitHub 代码分析状态。说明代答需要本机在线；没有收到另一位成员的真实 @ 并回覆前，不宣称已验证群聊代答。失败时也返回服务端地址和实际卡住的步骤。
+
+测试时请另一位成员在已绑定的项目频道连续 @ 运行 r19 的成员，提出两个问题。第一条生成答案期间，第二条进入队列，频道会显示「已收到，排队中」；轮到处理时显示「Codex 正在思考…」。实际观察并收到回复后再报告结果。
+```
 
 当前版本：**3.6.0**。
 
@@ -24,7 +58,7 @@
 
 同一个 ZIP 包含 macOS、Windows、Linux 脚本，完整提示词、协议、升级说明和逐文件 SHA-256 校验和。成员电脑只需要上报包，不需要克隆完整项目、安装数据库或启动服务端。当前局域网快速流程无需手填设备令牌或创建 `~/.project-pulse/config.json`。
 
-## 拿到 ZIP 后怎么用
+## 仅配置项目上报
 
 1. 解压到长期保留的目录，例如 `Documents/project-pulse-report`。不要在 ZIP 预览或临时目录里运行。
 2. 用这台电脑上的 Codex 打开解压后的 `project-pulse-report` 文件夹。
@@ -37,7 +71,7 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，先�
 
 我授权你识别本机 Codex 主会话及相关项目、成员、GitHub仓库和PR、模型与真实Token用量，并生成脱敏摘要、项目目标和里程碑。先主动查找并复用已有信息，仍缺信息或证据冲突时，再集中询问我。排除当前上报会话，不编造数据。
 
-使用包内对应系统的固定脚本，向 http://192.168.16.70:4185 增量上报。一个所选业务项目可关联多个仓库：查证每个真实仓库及数字ID，按README写repositories.json；PR按实际仓库与编号提交，不伪造单仓库归属。先核对服务端multi_repository_projects能力。PR也要按README查证并结构化提交，分别核对日志、Token和PR回执。
+使用包内对应系统的固定脚本，向 http://192.168.20.58:4185 增量上报。一个所选业务项目可关联多个仓库：查证每个真实仓库及数字ID，按README写repositories.json；PR按实际仓库与编号提交，不伪造单仓库归属。先核对服务端multi_repository_projects能力。PR也要按README查证并结构化提交，分别核对日志、Token和PR回执。
 
 每轮先读私有项目选择，并用 Inventory 查询所选项目和本机已授权会话在面板上的已有信息与缺项，再开始准备上报。只补有证据的缺项和经确认的新信息。已有内容、项目归属或待发批次与本机证据冲突时，先列出差异询问用户，等待确认再处理冲突项。定时运行把问题留在结果里，继续同步范围内其余无冲突数据。提交后重新查询核对。
 
@@ -52,7 +86,7 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，先�
 最后报告实际识别及提交结果、Token与PR核验结果、积压和缺失信息，以及任务标识、启用状态和计划规则。无法上报或无法设置任务时明确说明失败步骤和原因，不得宣称全部完成。
 ```
 
-当前服务端是 `http://192.168.16.70:4185`，客户端必须能访问它。客户端自己的 IP 不是服务端地址，不要替换。私有仓库与 PR 使用本机已授权的 GitHub 只读工具；权限不足时由 Codex 说明缺少什么，不把凭证发进聊天。
+当前服务端是 `http://192.168.20.58:4185`，客户端必须能访问它。客户端自己的 IP 不是服务端地址，不要替换。私有仓库与 PR 使用本机已授权的 GitHub 只读工具；权限不足时由 Codex 说明缺少什么，不把凭证发进聊天。
 
 ## 同步哪些数据
 
@@ -96,3 +130,9 @@ PROJECT_PULSE_AUTOMATION。读取当前目录的 PROMPT.txt 和 README.md，先�
 - 构建上报包：`sh ops/report/build-package.sh /绝对路径/project-pulse-report-3.6.0.zip`。包内不包含本机状态、路径映射、日志或凭证。
 
 [技术方案](技术方案.md) · [上报详细流程](ops/report/README.md) · [手动协议及其他来源适配](docs/lan-report.md)
+
+## 从 Ember 查询看板
+
+在已绑定的研发进度看板频道里，输入 `@` 并选择「研发看板试点」，可以问「这个项目还差什么？」或「今天早上九点前有几台电脑上传成功？」。
+
+项目进度来自最新的项目报告，回答会注明报告日期。上传台数来自本机 PostgreSQL 的成功回执，按设备去重。镜像服务的 `GET /api/v1/local-upload-counts` 仅接受本机请求，返回今天和今天截至上午九点的全团队台数，时区取自服务端。九点前第二项为空；从旧服务器导入的看板摘要不包含逐台上传回执。

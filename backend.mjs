@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
+import { validServiceToken } from './service-auth.mjs';
 import { listTeamSessions, editTeamSession, teamEditHistory } from './team-edits.mjs';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -156,6 +157,32 @@ function lanIdentity(deviceKey, labelHeader, githubHeader) {
   if (githubHeader !== undefined && (typeof githubHeader !== 'string' || !/^[a-z0-9-]{1,39}$/i.test(githubHeader))) fail(422,'invalid_github_login');
   return {id, credential: 'lan:' + deviceKey, placeholder, githubLogin:githubHeader,
     name: label ? label + ' · ' + hex.slice(0,12) : placeholder};
+}
+
+export async function bindEmberDevice(pool, { credential_digest, member_id, display_name } = {}) {
+  if (!/^[a-f0-9]{64}$/.test(credential_digest ?? '') || !/^[a-z0-9]{16}$/.test(member_id ?? '') ||
+      typeof display_name !== 'string' || !display_name.trim() || display_name.length > 160) {
+    fail(422, 'invalid_ember_binding');
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: [device] } = await client.query(
+      'SELECT device_id, ember_member_id FROM devices WHERE credential_digest=$1 AND revoked_at IS NULL FOR UPDATE',
+      [Buffer.from(credential_digest, 'hex')]);
+    if (!device) fail(404, 'device_not_reported');
+    if (device.ember_member_id && device.ember_member_id !== member_id) fail(409, 'device_already_bound');
+    await client.query(`INSERT INTO ember_members (member_id,display_name) VALUES ($1,$2)
+      ON CONFLICT (member_id) DO UPDATE SET display_name=EXCLUDED.display_name`, [member_id,display_name]);
+    await client.query('UPDATE devices SET ember_member_id=$1 WHERE device_id=$2', [member_id,device.device_id]);
+    await client.query('COMMIT');
+    return {display_name};
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function ingest(pool, token, raw, lan = null) {
@@ -410,13 +437,15 @@ export async function dashboard(pool, days, now = Date.now()) {
   const cutoff = dashboardCutoff(days,now);
   const end = new Date(now);
   const queries = [
-    [`SELECT d.display_name, t.last_seen_at, t.tool_id, t.full_name, t.workspace_name, t.last_activity_at
-      FROM developers d LEFT JOIN LATERAL (
-        SELECT v.last_seen_at,s.tool_id,r.full_name,s.workspace_name,s.last_activity_at FROM devices v
+    [`SELECT d.member_key,d.display_name,d.device_count,t.last_seen_at,t.tool_id,t.full_name,t.workspace_name,t.last_activity_at
+      FROM (SELECT member_key,display_name,count(*)::int AS device_count FROM reporting_devices
+        WHERE revoked_at IS NULL GROUP BY member_key,display_name) d
+      LEFT JOIN LATERAL (
+        SELECT v.last_seen_at,s.tool_id,r.full_name,s.workspace_name,s.last_activity_at FROM reporting_devices v
         LEFT JOIN sessions s USING (device_id) LEFT JOIN repositories r USING (repository_id)
-        WHERE v.developer_id=d.developer_id AND v.revoked_at IS NULL
+        WHERE v.member_key=d.member_key AND v.revoked_at IS NULL
         ORDER BY s.last_activity_at DESC NULLS LAST,v.last_seen_at DESC NULLS LAST LIMIT 1
-      ) t ON true ORDER BY d.display_name`,[]],
+      ) t ON true ORDER BY d.display_name,d.member_key`,[]],
     [`SELECT r.repository_id,r.full_name,r.business_category,
       ARRAY(SELECT actual.full_name FROM business_project_repositories l JOIN repositories actual ON actual.repository_id=l.repository_id
         WHERE l.project_repository_id=r.repository_id ORDER BY actual.full_name) AS repositories,
@@ -429,8 +458,8 @@ export async function dashboard(pool, days, now = Date.now()) {
     [`SELECT u.provider,u.model,sum(u.input_tokens) AS input_tokens,sum(u.cached_input_tokens) AS cached_input_tokens,
       sum(u.output_tokens) AS output_tokens FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1 AND u.occurred_at <= $2
       GROUP BY u.provider,u.model ORDER BY sum(coalesce(u.input_tokens,0)+coalesce(u.output_tokens,0)) DESC`,[cutoff,end]],
-    [`SELECT s.session_id,s.title,coalesce(s.display_title, s.title) AS display_title,d.display_name,s.tool_id,r.full_name,s.workspace_name,s.last_activity_at,x.summary,x.summarizer_tool
-      FROM sessions s JOIN devices v USING(device_id) JOIN developers d USING(developer_id) LEFT JOIN repositories r USING(repository_id)
+    [`SELECT s.session_id,s.title,coalesce(s.display_title, s.title) AS display_title,v.member_key,v.display_name,s.tool_id,r.full_name,s.workspace_name,s.last_activity_at,x.summary,x.summarizer_tool
+      FROM sessions s JOIN reporting_devices v USING(device_id) LEFT JOIN repositories r USING(repository_id)
       LEFT JOIN LATERAL (SELECT summary,summarizer_tool FROM session_summaries z WHERE z.device_id=s.device_id AND z.session_id=s.session_id
       ORDER BY observed_at DESC,summary_id LIMIT 1) x ON true WHERE s.last_activity_at >= $1 ORDER BY s.last_activity_at DESC LIMIT 100`,[cutoff]],
     [`SELECT a.kind,a.state,count(*)::int AS count FROM agents a WHERE a.last_activity_at >= $1 GROUP BY a.kind,a.state`,[cutoff]],
@@ -442,9 +471,9 @@ export async function dashboard(pool, days, now = Date.now()) {
     [`SELECT DISTINCT ON (q.account_id,q.limit_id,q.window_key) d.display_name,a.provider,q.limit_id,q.window_key,q.used_percent,q.resets_at,q.observed_at
       FROM quota_snapshots q JOIN provider_accounts a USING(account_id) JOIN developers d ON d.developer_id=q.developer_id
       ORDER BY q.account_id,q.limit_id,q.window_key,q.observed_at DESC`,[]],
-    [`SELECT a.agent_id,a.kind,a.role,a.state,a.last_activity_at,${activeAgentSql('a','$2::timestamptz')} AS is_running,s.session_id,s.display_title,s.title,s.tool_id,s.workspace_name,r.full_name,d.display_name,u.provider,u.model
+    [`SELECT a.agent_id,a.kind,a.role,a.state,a.last_activity_at,${activeAgentSql('a','$2::timestamptz')} AS is_running,s.session_id,s.display_title,s.title,s.tool_id,s.workspace_name,r.full_name,v.member_key,v.display_name,u.provider,u.model
       FROM agents a JOIN sessions s ON s.device_id=a.device_id AND s.session_id=a.session_id
-      JOIN devices v ON v.device_id=a.device_id JOIN developers d ON d.developer_id=v.developer_id
+      JOIN reporting_devices v ON v.device_id=a.device_id
       LEFT JOIN repositories r ON r.repository_id=s.repository_id
       LEFT JOIN LATERAL (SELECT provider,model FROM usage_events WHERE device_id=a.device_id AND session_id=a.session_id
         ORDER BY occurred_at DESC LIMIT 1) u ON true
@@ -471,11 +500,11 @@ export async function dashboard(pool, days, now = Date.now()) {
       sum(coalesce(u.output_tokens,0)) AS output_tokens
       FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1 AND u.occurred_at <= $2
       GROUP BY u.session_id`,[cutoff,end]],
-    [`SELECT d.display_name,r.full_name,s.workspace_name,count(DISTINCT s.session_id)::int AS session_count,
+    [`SELECT v.member_key AS developer_id,v.display_name,r.full_name,s.workspace_name,count(DISTINCT s.session_id)::int AS session_count,
       max(s.last_activity_at) AS last_activity_at
-      FROM sessions s JOIN devices v USING(device_id) JOIN developers d USING(developer_id)
+      FROM sessions s JOIN reporting_devices v USING(device_id)
       LEFT JOIN repositories r USING(repository_id)
-      GROUP BY d.display_name,r.full_name,s.workspace_name ORDER BY d.display_name,last_activity_at DESC`,[]]
+      GROUP BY v.member_key,v.display_name,r.full_name,s.workspace_name ORDER BY v.display_name,last_activity_at DESC`,[]]
   ];
   queries.push([`SELECT DISTINCT ON (workspace_name) workspace_name,project_state AS status
     FROM sessions WHERE repository_id IS NULL AND workspace_name IS NOT NULL
@@ -535,11 +564,18 @@ async function reportInventory(pool, token, lan, params) {
   if (device?.revoked_at || (!device && !lan)) fail(401,'invalid_device');
   const sources=await pool.query(`SELECT s.session_id AS source_id,coalesce(r.full_name,s.workspace_name) AS project_key,
       s.repository_id,coalesce(c.byte_offset,0)::text AS offset,x.summary,
-      s.project_state AS state,s.reason_code,s.observed_at,s.project_evidence AS evidence
+      s.project_state AS state,s.reason_code,s.observed_at,s.project_evidence AS evidence,y.project_report
     FROM sessions s LEFT JOIN repositories r USING(repository_id)
     LEFT JOIN report_cursors c ON c.device_id=s.device_id AND c.source_id=s.session_id
     LEFT JOIN LATERAL (SELECT summary FROM session_summaries x WHERE x.device_id=s.device_id AND x.session_id=s.session_id
       ORDER BY observed_at DESC,summary_id LIMIT 1) x ON true
+    LEFT JOIN LATERAL (
+      SELECT jsonb_build_object('goal',p.goal,'milestones',p.milestones,'modules',p.modules,'observed_at',p.observed_at) AS project_report
+      FROM project_reports p
+      WHERE p.device_id=s.device_id AND p.source_session_id=s.session_id
+        AND lower(p.project_key)=lower(coalesce(r.full_name,s.workspace_name))
+      ORDER BY p.observed_at DESC,p.report_id DESC LIMIT 1
+    ) y ON true
     WHERE s.device_id=$1 AND s.session_id=ANY($2::uuid[])`,[device?.device_id ?? null,ids]);
   const matches=sources.rows.filter(row=>row.project_key?.toLowerCase()===key.toLowerCase());
   const conflicts=sources.rows.filter(row=>row.project_key?.toLowerCase()!==key.toLowerCase())
@@ -623,7 +659,20 @@ export function createApi({localView = false, lanEnrollment = false} = {}) {
       try {
         const deviceKey = req.headers['x-pulse-lan-device'];
         const lan = lanEnrollment && !req.headers.authorization && deviceKey !== undefined ? lanIdentity(deviceKey,req.headers['x-pulse-lan-label'],req.headers['x-pulse-lan-github']) : null;
-        if (['/api/v1/team-sessions','/api/v1/team-edits'].includes(url.pathname)) {
+        if (req.method === 'POST' && url.pathname === '/api/v1/ember-device-binding' && lanEnrollment) {
+          if (!validServiceToken(req.headers.authorization,process.env.PULSE_DEVICE_BIND_TOKEN)) fail(401,'unauthorized');
+          const chunks = [];
+          let size = 0;
+          for await (const chunk of req) {
+            size += chunk.length;
+            if (size > 4096) { res.writeHead(413).end(); return; }
+            chunks.push(chunk);
+          }
+          let input;
+          try { input = JSON.parse(Buffer.concat(chunks)); } catch { fail(400,'invalid_json'); }
+          if (!input || Array.isArray(input) || typeof input !== 'object') fail(422,'invalid_ember_binding');
+          data = await bindEmberDevice(pool,input);
+        } else if (['/api/v1/team-sessions','/api/v1/team-edits'].includes(url.pathname)) {
           if (process.env.PULSE_TEAM_EDITS!=='1') fail(403,'team_edits_disabled');
           if (req.method==='GET') {
             res.setHeader('Cache-Control','no-store');

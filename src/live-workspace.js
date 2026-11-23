@@ -1,5 +1,5 @@
 import { icon } from './icons.js';
-import {researchProjectCount,memberProjectKeys,renderProjectDocuments,isRunningAgent,splitDeferredPanels,adaptiveColumnsClass} from './live-projects.js';
+import {researchProjectCount,memberKey,memberProjectKeys,renderProjectDocuments,isRunningAgent,splitDeferredPanels,adaptiveColumnsClass} from './live-projects.js';
 
 const app = document.querySelector('#app');
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
@@ -166,9 +166,9 @@ function modelRows() {
 function peopleRows(items=data.people) {
   if (!items.length) return empty('暂无成员');
   const rows = items.map(row => {
-    const projects = memberProjects(row.display_name);
+    const projects = memberProjects(memberKey(row));
     return `<tr>
-      <th scope="row"><a class="live-member-identity" href="#/team/${encodeURIComponent(row.display_name)}">
+      <th scope="row"><a class="live-member-identity" href="#/team/${encodeURIComponent(memberKey(row))}">
         <span class="live-member-mark">${icon('users')}</span><strong>${esc(row.display_name)}</strong>
       </a></th>
       <td>${row.tool_id ? `<span class="live-member-tool">${esc(row.tool_id)}</span>` : '—'}</td>
@@ -176,7 +176,7 @@ function peopleRows(items=data.people) {
         `<a href="#/projects/${encodeURIComponent(key)}">${esc(projectName(key))}</a>`
       ).join('') : '<span>未关联</span>'}</div></td>
       <td>${date(row.last_activity_at)}</td>
-      <td>${date(row.last_seen_at)}</td>
+      <td>${row.device_count ? count(row.device_count) + " 台 · " : ""}${date(row.last_seen_at)}</td>
     </tr>`;
   }).join('');
   return `<div class="live-table-wrap live-model-wrap">
@@ -186,18 +186,18 @@ function peopleRows(items=data.people) {
     </table>
   </div>`;
 }
-function memberProjects(name,key='') {
-  return memberProjectKeys(data,name,projectKey,key);
+function memberProjects(member,key='') {
+  return memberProjectKeys(data,member,projectKey,key);
 }
 function teamCards(key='') {
-  const members=data.people.filter(person=>!key || memberProjects(person.display_name,key).length ||
-    data.sessions.some(session=>session.display_name===person.display_name && projectKey(session)===key));
+  const members=data.people.filter(person=>!key || memberProjects(memberKey(person),key).length ||
+    data.sessions.some(session=>memberKey(session)===memberKey(person) && projectKey(session)===key));
   return `<section class="panel team-snapshot live-team-snapshot"><div class="panel-head"><h2 class="panel-title">${icon('users')}${key?'项目成员':'团队协作'} <span class="section-count">${members.length}</span></h2>${route().page==='team'?'':`<a class="text-button" href="#/team">查看团队 ${icon('arrow')}</a>`}</div>${members.length?`<div class="live-team-grid">${members.map((person,index)=>{
     const name=person.display_name||'未命名成员';
-    const projects=memberProjects(name,key);
-    const active=runningAgents(key).filter(agent=>agent.display_name===name).length;
+    const projects=memberProjects(memberKey(person),key);
+    const active=runningAgents(key).filter(agent=>memberKey(agent)===memberKey(person)).length;
     const initials=name.trim().split(/\s+/).map(part=>part[0]).slice(0,2).join('').toUpperCase();
-    return `<a class="live-team-card accent-${['lime','orange','blue','purple','teal'][index%5]}" href="#/team/${encodeURIComponent(name)}"><span class="person-avatar" aria-hidden="true">${esc(name.trim().slice(-1))}<small>${esc(initials)}</small></span><div class="live-team-name"><strong>${esc(name)}</strong><small>${esc(person.tool_id||'开发工具待上报')}</small></div><div class="live-team-stats"><strong>${projects.length} 个项目</strong><small>${active?`${active} Agent 运行中`:'查看工作详情'}</small></div><div class="live-team-projects">${projects.length?projects.map(project=>`<span>${esc(projectName(project))}</span>`).join(''):'<span>项目待关联</span>'}</div></a>`;
+    return `<a class="live-team-card accent-${['lime','orange','blue','purple','teal'][index%5]}" href="#/team/${encodeURIComponent(memberKey(person))}"><span class="person-avatar" aria-hidden="true">${esc(name.trim().slice(-1))}<small>${esc(initials)}</small></span><div class="live-team-name"><strong>${esc(name)}</strong><small>${esc(person.tool_id||'开发工具待上报')}</small></div><div class="live-team-stats"><strong>${projects.length} 个项目</strong><small>${active?`${active} Agent 运行中`:'查看工作详情'}</small></div><div class="live-team-projects">${projects.length?projects.map(project=>`<span>${esc(projectName(project))}</span>`).join(''):'<span>项目待关联</span>'}</div></a>`;
   }).join('')}</div>`:empty('暂无团队成员')}</section>`;
 }
 function agentCards(items) {
@@ -355,19 +355,22 @@ function teamPage() {
   const subagents=data.agents.filter(row=>row.kind==='subagent').reduce((sum,row)=>sum+row.count,0);
   return `${heading('团队成员')}<div class="metric-grid live-team-metrics">${metric('团队员工',data.people.length,'users')}${metric('参与项目',allProjects().length,'folder')}${metric('运行中的 Agent',data.running,'bot')}${metric('开发工具子 Agent',subagents,'bot')}</div>${teamCards()}${section(`${icon('users')}成员活动`,peopleRows())}`;
 }
-function memberPage(name) {
-  const person=data.people.find(item=>item.display_name===name);
+function selectedMember(key) {
+  return data.people.find(item=>memberKey(item)===key) ?? data.people.find(item=>item.display_name===key);
+}
+function memberPage(key) {
+  const person=selectedMember(key);
   if (!person) return `${heading('成员不存在',false)}${empty('返回团队成员选择一位成员')}`;
-  const sessions=data.sessions.filter(item=>item.display_name===name);
-  const projects=memberProjects(name);
-  const active=runningAgents().filter(item=>item.display_name===name);
-  return `${heading(name)}<div class="metric-grid live-team-metrics">${metric('参与项目',projects.length,'folder')}${metric('近期会话',sessions.length,'activity')}${metric('运行中的 Agent',active.length,'bot')}${metric('最近活跃工具',person.tool_id||'—','code')}</div>${section(`${icon('folder')}参与项目`,projects.length?projectCards(allProjects().filter(item=>projects.includes(item.full_name))):empty('项目待关联'))}${section(`${icon('activity')}近期会话与总结`,sessionGroups(sessions))}${section(`${icon('bot')}AI 工作现场`,agentCards(active))}`;
+  const sessions=data.sessions.filter(item=>memberKey(item)===memberKey(person));
+  const projects=memberProjects(memberKey(person));
+  const active=runningAgents().filter(item=>memberKey(item)===memberKey(person));
+  return `${heading(person.display_name)}<div class="metric-grid live-team-metrics">${metric('参与项目',projects.length,'folder')}${metric('近期会话',sessions.length,'activity')}${metric('运行中的 Agent',active.length,'bot')}${metric('最近活跃工具',person.tool_id||'—','code')}</div>${section(`${icon('folder')}参与项目`,projects.length?projectCards(allProjects().filter(item=>projects.includes(item.full_name))):empty('项目待关联'))}${section(`${icon('activity')}近期会话与总结`,sessionGroups(sessions))}${section(`${icon('bot')}AI 工作现场`,agentCards(active))}`;
 }
 function sessionsPage() { return `${heading('近期会话与总结')}${section(`${icon('activity')}会话`,sessionGroups(data.sessions))}`; }
 function outputsPage() { return `${heading('产出文档')}${section(`${icon('document')}文档清单`,pulls(data.pulls))}`; }
 function render() {
   if (!data) { app.innerHTML=`<div class="boot-state" role="status"><span class="boot-mark">P</span>${esc(error||'正在读取工作台…')} <button class="button-secondary" id="refresh">重试</button></div>`;return; }
-  const current=route(), names={overview:'总览',team:'团队成员',member:current.name,sessions:'近期会话与总结',outputs:'产出文档',project:projectName(current.key)};
+  const current=route(), names={overview:'总览',team:'团队成员',member:current.name ? selectedMember(current.name)?.display_name ?? '成员详情' : '成员详情',sessions:'近期会话与总结',outputs:'产出文档',project:projectName(current.key)};
   const content=current.page==='project'?projectPage(current.key):current.page==='member'?memberPage(current.name):current.page==='team'?teamPage():current.page==='sessions'?sessionsPage():current.page==='outputs'?outputsPage():overview();
   document.title=`${names[current.page]} · Project Pulse`;
   app.innerHTML=`${side()}<div class="live-nav-backdrop" id="backdrop"></div><div class="content-shell">${topbar(names[current.page])}<main id="main-content" tabindex="-1">${error?`<p class="live-error" role="status">${esc(error)}</p>`:''}${content}<footer class="live-footer">Project Pulse · 数据按新加坡时间统计</footer></main></div>`;
