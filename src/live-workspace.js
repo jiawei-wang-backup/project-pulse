@@ -339,7 +339,7 @@ function projectPage(key) {
   const sessions=data.sessions.filter(row=>projectKey(row)===key), docs=data.pulls.filter(row=>row.full_name===key);
   const agents=runningAgents(key);
   const agentSection=`<div id="project-agents">${section(`${icon('bot')}AI 工作现场`,agentCards(agents))}</div>`;
-  return `${heading(projectName(key))}<div class="live-project-info"><span>${project.local ? '本地工作区' : '已关联 GitHub 仓库'}</span>${status[project.status] ? `<span class="status-badge tone-${tone[project.status]||'muted'}">${status[project.status]}</span>` : ''}<span>${esc(key)}</span></div>
+  return `${heading(projectName(key))}<div class="live-project-info"><span>${project.local ? '本地工作区' : '已关联 GitHub 仓库'}</span>${status[project.status] ? `<span class="status-badge tone-${tone[project.status]||'muted'}">${status[project.status]}</span>` : ''}<span>${esc(key)}</span><span>负责人：${esc(project.owner_name || data.memberships?.find(r=>projectKey(r)===key && r.owner_name)?.owner_name || data.project_reports?.find(r=>r.project_key.toLowerCase()===key.toLowerCase())?.owner_name || '待登记')}</span></div>
     <div class="metric-grid live-project-metrics">${metric('近期会话',sessions.length,'activity')}${metric('产出文档',docs.length,'document')}${metric('草稿',docs.filter(row=>row.is_draft).length,'document')}</div>
     <nav class="live-page-tabs" aria-label="项目内容"><button data-scroll-to="project-modules">功能模块</button><button data-scroll-to="project-milestones">项目里程碑</button><button data-scroll-to="project-agents">AI 工作现场</button><button data-scroll-to="project-sessions">近期会话</button><button data-scroll-to="project-docs">产出文档</button><button data-scroll-to="project-members">项目成员</button></nav>
     <div id="project-modules">${projectModules(key)}</div>

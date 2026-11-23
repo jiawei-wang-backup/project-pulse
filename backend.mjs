@@ -242,6 +242,14 @@ export async function ingest(pool, token, raw, lan = null) {
           [device_id,cursor.source_id,cursor.to_offset,cursor.context]);
       }
       await client.query('INSERT INTO ingest_batches (device_id,batch_id,request_digest,schema_version,collector_version,sent_at) VALUES ($1,$2,$3,$4,$5,$6)', [device_id,batch_id,hash,schema_version,collector_version,sent_at]);
+      const projectsReported = new Set([
+        ...report.sessions.map(s => s.repository || s.workspace_name),
+        ...(report.projects || []).map(p => p.project_key),
+        ...(report.mappings || []).map(m => m.repository),
+      ].filter(Boolean).map(key => key.toLowerCase()));
+      for (const key of [...projectsReported].sort()) {
+        await client.query('INSERT INTO project_owners(project_key,device_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',[key,device_id]);
+      }
       for (const {tool,repository,project_observation,...session} of report.sessions) {
         const repo = repository ? await client.query("SELECT repository_id FROM repositories WHERE lower(github_host)='github.com' AND lower(full_name)=lower($1)",[repository]) : null;
         if (repository && !repo?.rowCount && /^[\w.-]+\/[\w.-]+$/.test(repository)) session.workspace_name=repository.toLowerCase();
@@ -446,7 +454,7 @@ export async function dashboard(pool, days, now = Date.now()) {
         WHERE v.member_key=d.member_key AND v.revoked_at IS NULL
         ORDER BY s.last_activity_at DESC NULLS LAST,v.last_seen_at DESC NULLS LAST LIMIT 1
       ) t ON true ORDER BY d.display_name,d.member_key`,[]],
-    [`SELECT r.repository_id,r.full_name,r.business_category,
+    [`SELECT r.repository_id,r.full_name,(SELECT v.display_name FROM project_owners po JOIN reporting_devices v USING(device_id) WHERE po.project_key=lower(r.full_name)) AS owner_name,r.business_category,
       ARRAY(SELECT actual.full_name FROM business_project_repositories l JOIN repositories actual ON actual.repository_id=l.repository_id
         WHERE l.project_repository_id=r.repository_id ORDER BY actual.full_name) AS repositories,
       CASE WHEN r.completed_at IS NOT NULL THEN 'completed'
@@ -483,7 +491,7 @@ export async function dashboard(pool, days, now = Date.now()) {
       FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1 AND u.occurred_at <= $2
       GROUP BY day ORDER BY day`,[cutoff,end]],
     [`SELECT DISTINCT ON (lower(p.project_key)) coalesce(r.full_name,p.project_key) AS project_key,
-        p.goal,p.milestones,p.observed_at,p.summarizer_tool,
+        p.goal,p.milestones,p.observed_at,p.summarizer_tool,(SELECT v.display_name FROM project_owners po JOIN reporting_devices v USING(device_id) WHERE po.project_key=lower(p.project_key)) AS owner_name,
         (SELECT m.modules FROM project_reports m WHERE lower(m.project_key)=lower(p.project_key) AND m.modules IS NOT NULL
           ORDER BY m.observed_at DESC,m.report_id DESC LIMIT 1) AS modules
       FROM project_reports p
@@ -500,7 +508,7 @@ export async function dashboard(pool, days, now = Date.now()) {
       sum(coalesce(u.output_tokens,0)) AS output_tokens
       FROM usage_events u WHERE u.accounting='billable' AND u.occurred_at >= $1 AND u.occurred_at <= $2
       GROUP BY u.session_id`,[cutoff,end]],
-    [`SELECT v.member_key AS developer_id,v.display_name,r.full_name,s.workspace_name,count(DISTINCT s.session_id)::int AS session_count,
+    [`SELECT v.member_key AS developer_id,v.display_name,r.full_name,s.workspace_name,(SELECT o.display_name FROM project_owners po JOIN reporting_devices o USING(device_id) WHERE po.project_key=lower(coalesce(r.full_name,s.workspace_name))) AS owner_name,count(DISTINCT s.session_id)::int AS session_count,
       max(s.last_activity_at) AS last_activity_at
       FROM sessions s JOIN reporting_devices v USING(device_id)
       LEFT JOIN repositories r USING(repository_id)

@@ -43,6 +43,7 @@ psql_local < db/010_team_edits.sql >/dev/null
 psql_local < db/011_project_repositories.sql >/dev/null
 psql_local < db/012_project_modules.sql >/dev/null
 psql_local < db/013_ember_device_members.sql >/dev/null
+psql_local < db/014_project_owners.sql >/dev/null
 case "${1:-serve}" in
   serve) PULSE_LOCAL_VIEW=1 PULSE_HOST=127.0.0.1 exec node server.mjs ;;
   serve-lan)
