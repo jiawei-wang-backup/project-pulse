@@ -1,5 +1,5 @@
 import { icon } from './icons.js';
-import {researchProjectCount,memberKey,memberProjectKeys,renderProjectDocuments,isRunningAgent,splitDeferredPanels,adaptiveColumnsClass} from './live-projects.js';
+import {researchProjectCount,memberKey,memberProjectKeys,renderProjectDocuments,isRunningAgent,splitDeferredPanels,adaptiveColumnsClass,mergeEmberProjects} from './live-projects.js';
 
 const app = document.querySelector('#app');
 const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
@@ -12,6 +12,12 @@ if (!periods[days]) days = 7;
 let data = null;
 let loading = false;
 let error = '';
+let pulseUnavailable = false;
+let emberNotice = '';
+const securePulseView = location.pathname === '/project-pulse/';
+const emberDashboard = document.querySelector('meta[name="ember-pulse-url"]')?.content;
+let emberRead;
+let emberRequest;
 
 function count(value) {
   if (value == null) return '—';
@@ -23,11 +29,15 @@ function count(value) {
 }
 function projectName(name) { return (name || '').split('/').at(-1) || '未关联项目'; }
 function workspaceRepository(workspace) {
-  if (workspace !== '监控面板') return '';
-  return data.projects.find(project => project.full_name.toLowerCase() === 'jiawei-wang-dev/project-pulse')?.full_name || '';
+  const key = String(workspace ?? '').toLowerCase();
+  const repository = key === '监控面板' ? 'jiawei-wang-dev/project-pulse' : key;
+  const exact = data.projects.find(project => project.full_name.toLowerCase() === repository);
+  if (exact) return exact.full_name;
+  const aliases = data.projects.filter(project => project.ember && projectName(project.full_name).toLowerCase() === key);
+  return aliases.length === 1 ? aliases[0].full_name : '';
 }
 function projectKey(row) {
-  if (row.full_name) return row.full_name;
+  if (row.full_name) return workspaceRepository(row.full_name) || row.full_name;
   if (row.agent_id && row.session_id) {
     const session=data.sessions.find(item=>item.session_id===row.session_id);
     if (session) return projectKey(session);
@@ -87,16 +97,21 @@ function allProjects() {
   return [...map.values()];
 }
 function reportFor(key) { return (data.project_reports||[]).find(row=>row.project_key===key) || (data.project_reports||[]).find(row=>workspaceRepository(row.project_key)===key); }
-function milestoneCard(key) {
-  const report=reportFor(key);
-  if (!report) return `<div class="live-goal-line">项目目标待总结</div><div class="milestones live-milestones"><div class="milestone is-pending"><span class="milestone-dot">1</span><strong>等待项目总结</strong><small>未完成</small></div></div>`;
-  return `<div class="live-goal-line" title="${esc(report.goal)}">${esc(report.goal)}</div><div class="milestones live-milestones" aria-label="项目里程碑">${report.milestones.map((item,index)=>`<div class="milestone is-${item.state==='completed'?'accepted':'pending'}" title="${esc(item.evidence)}"><span class="milestone-dot">${item.state==='completed'?icon('check'):index+1}</span><strong>${esc(item.title)}</strong><small>${item.state==='completed'?'已完成':'未完成'}</small></div>`).join('')}</div>`;
-}
 function milestonePanel(key) {
-  const report=reportFor(key);
-  if (!report) return section(`${icon('flag')}项目里程碑`,empty('暂无项目总结；Codex 下次上报时会整理项目目标、已完成项与未完成项'));
-  const completed=report.milestones.filter(item=>item.state==='completed').length;
-  return section(`${icon('flag')}项目里程碑`,`<div class="live-goal"><span>项目目标</span><strong>${esc(report.goal)}</strong><small>更新于 ${date(report.observed_at)} · ${esc(report.summarizer_tool)}</small></div><div class="live-project-route"><div class="milestones">${report.milestones.map((item,index)=>`<div class="milestone is-${item.state==='completed'?'accepted':'pending'}"><span class="milestone-dot">${item.state==='completed'?icon('check'):index+1}</span><strong>${esc(item.title)}</strong><small>${item.state==='completed'?'已完成':'未完成'}</small></div>`).join('')}</div></div><div class="live-milestone-summary"><span>${completed} 项已完成</span><span>${report.milestones.length-completed} 项未完成</span></div><div class="live-milestone-list">${report.milestones.map((item,index)=>`<article class="live-milestone-item ${item.state==='completed'?'is-done':''}"><span class="live-milestone-node">${item.state==='completed'?icon('check'):index+1}</span><div><strong>${esc(item.title)}</strong><p>${esc(item.evidence)}</p></div><span class="status-badge tone-${item.state==='completed'?'green':'muted'}">${item.state==='completed'?'已完成':'未完成'}</span></article>`).join('')}</div>`);
+  const title=`${icon('flag')}项目里程碑与进展`;
+  if (!securePulseView) return section(title, emberDashboard
+    ? `<p class="live-empty"><a class="live-more" href="${esc(emberDashboard)}#/projects/${encodeURIComponent(key)}">通过 Ember 查看里程碑和进展 ${icon('arrow')}</a></p>`
+    : empty('里程碑与进展请在 Ember 项目总览查看'));
+  const result=emberRead?.key===key ? emberRead : null;
+  if (!result) return section(title,empty('正在核对 Ember 项目权限…'));
+  if (result.status===401) return section(title,`<p class="live-empty"><a class="live-more" href="/session/new" target="_blank" rel="noopener">登录 Ember</a>，然后返回此页刷新。</p>`);
+  if (!result.snapshot) return section(title,empty(result.status===404 ? '当前账号没有可读取的 Ember 项目快照' : '暂时无法读取 Ember，请刷新重试'));
+  const snapshot=result.snapshot;
+  const completed=snapshot.milestones.filter(item=>item.state==='completed').length;
+  const progress=snapshot.progress.length ? `<ul class="live-list">${snapshot.progress.map(item=>`<li class="live-session">${esc(item)}</li>`).join('')}</ul>` : empty('暂无进展');
+  const milestones=snapshot.milestones.length ? `<div class="live-milestone-summary"><span>${completed} 项已完成</span><span>${snapshot.milestones.length-completed} 项未完成</span></div>
+    <div class="live-milestone-list">${snapshot.milestones.map((item,index)=>`<article class="live-milestone-item ${item.state==='completed'?'is-done':''}"><span class="live-milestone-node">${item.state==='completed'?icon('check'):index+1}</span><div><strong>${esc(item.title)}</strong>${item.evidence?`<p>${esc(item.evidence)}</p>`:''}${item.due_on?`<small>截止 ${esc(item.due_on)}</small>`:''}</div><span class="status-badge tone-${item.state==='completed'?'green':'muted'}">${item.state==='completed'?'已完成':'未完成'}</span></article>`).join('')}</div>` : empty('暂无里程碑');
+  return section(title,`<div class="live-goal"><span>来源 · Ember</span><small>更新于 <time datetime="${esc(snapshot.updated_at)}">${date(snapshot.updated_at)}</time></small>${snapshot.goal?`<strong>${esc(snapshot.goal)}</strong>`:''}</div><h3>最近进展</h3>${progress}${milestones}`);
 }
 function side() {
   const current=route(), selected=key=>current.page==='project'&&current.key===key;
@@ -106,7 +121,7 @@ function side() {
     <a class="nav-main ${current.page==='outputs'?'is-active':''}" href="#/outputs">${icon('document')}产出文档</a>
     <a class="nav-main ${['team','member'].includes(current.page)?'is-active':''}" href="#/team">${icon('users')}团队成员</a>
     <div class="nav-section"><span>项目空间</span><span>${allProjects().length}</span></div>
-    <nav class="project-nav">${allProjects().map(item=>`<a class="${selected(item.full_name)?'is-active':''}" href="#/projects/${encodeURIComponent(item.full_name)}">${icon('folder')}<span class="live-nav-name">${esc(projectName(item.full_name))}</span></a>`).join('')}</nav>
+    <nav class="project-nav">${allProjects().map(item=>`<a class="${selected(item.full_name)?'is-active':''}" href="#/projects/${encodeURIComponent(item.full_name)}">${icon('folder')}<span class="live-nav-name">${esc(item.ember?.name || projectName(item.full_name))}</span></a>`).join('')}</nav>
     <div class="sidebar-spacer"></div>${sidebarUsage(data.models || [])}<div class="workspace-user"><span class="avatar">P</span><div><strong>真实数据</strong><small>ASIA/SINGAPORE</small></div><span class="local-dot"></span></div></aside>`;
 }
 function topbar(title) { return `<div class="topbar"><div class="breadcrumbs"><button class="icon-button live-menu" id="menu" aria-label="打开导航">${icon('menu')}</button><a href="#/overview">工作空间</a>${icon('chevron')}<span class="current">${esc(title)}</span></div><div class="topbar-right"><button class="button-secondary" id="refresh">刷新</button></div></div>`; }
@@ -122,9 +137,9 @@ function projectCards(items) {
   if (!items.length) return empty('暂无项目');
   return `<div class="project-grid live-project-grid">${items.map((item,index)=>{
     const countSessions=data.sessions.filter(row=>projectKey(row)===item.full_name).length;
-    const countPulls=data.pulls.filter(row=>row.full_name===item.full_name).length;
+    const countPulls=data.pulls.filter(row=>projectKey(row)===item.full_name).length;
     const href=`#/projects/${encodeURIComponent(item.full_name)}`;
-    return `<article class="project-card accent-${['lime','blue','purple','orange','teal'][index%5]}"><div class="card-header"><span class="project-symbol">${icon('folder')}</span><div class="card-name"><h3><a href="${href}">${esc(projectName(item.full_name))}</a></h3><p>${item.local ? '本地工作区' : item.repositories?.length>1 ? `已关联 ${item.repositories.length} 个 GitHub 仓库` : '已关联 GitHub 仓库'}</p></div>${status[item.status] ? `<span class="status-badge tone-${tone[item.status]||'muted'}">${status[item.status]}</span>` : ''}</div>${milestoneCard(item.full_name)}<div class="live-card-counts"><span>${countSessions} 个会话</span><span>${countPulls} 份 PR</span></div><a class="card-footer" href="${href}"><span>${esc(item.full_name)}</span><span class="card-card-link">进入看板 ${icon('arrow')}</span></a></article>`;
+    return `<article class="project-card accent-${['lime','blue','purple','orange','teal'][index%5]}"><div class="card-header"><span class="project-symbol">${icon('folder')}</span><div class="card-name"><h3><a href="${href}">${esc(item.ember?.name || projectName(item.full_name))}</a></h3><p>${item.ember ? '项目进展来自 Ember' : item.local ? '本地工作区' : item.repositories?.length>1 ? `已关联 ${item.repositories.length} 个 GitHub 仓库` : '已关联 GitHub 仓库'}</p></div>${status[item.status] ? `<span class="status-badge tone-${tone[item.status]||'muted'}">${status[item.status]}</span>` : ''}</div><div class="live-card-counts"><span>${pulseUnavailable ? 'Pulse 会话与 PR 暂不可读' : countSessions + ' 个会话 · ' + countPulls + ' 份 PR'}</span></div><a class="card-footer" href="${href}"><span>${esc(item.full_name)}</span><span class="card-card-link">进入看板 ${icon('arrow')}</span></a></article>`;
   }).join('')}</div>`;
 }
 function sessionRows(items,showProject=true) {
@@ -269,7 +284,7 @@ function attentionPanel(projects) {
     const blocked = item.status === 'blocked';
     return `<a class="live-attention-item ${blocked ? 'is-blocked' : ''}" href="#/projects/${encodeURIComponent(item.full_name)}">
       <span class="live-attention-mark">${icon(blocked ? 'warning' : 'folder')}</span>
-      <strong>${esc(projectName(item.full_name))}</strong>
+      <strong>${esc(item.ember?.name || projectName(item.full_name))}</strong>
       <span class="status-badge tone-${tone[item.status] || 'muted'}">${status[item.status] || '已阻塞'}</span>
       ${icon('chevron', 'live-attention-arrow')}
     </a>`;
@@ -307,9 +322,9 @@ function overview() {
   const deferredPanels = optional.deferred.map(panel=>panel.html).join('');
   return `${heading('总览')}<div class="metric-grid live-overview-metrics">
     ${metric('在研项目', activeProjects, 'folder', false, {unit:`/ ${projects.length}`})}
-    ${metric('运行中的 Agent', data.running, 'bot', false, {unit:'个'})}
-    ${metric('成果文档', new Set(data.pulls.map(row=>row.url)).size, 'document', false, {unit:'份'})}
-    ${metric(`${periods[days]} Token 用量`, count((data.models || []).reduce((sum, row) => sum + usageTotal(row), 0n)), 'token', true)}
+    ${metric('运行中的 Agent', pulseUnavailable ? '—' : data.running, 'bot', false, {unit:'个'})}
+    ${metric('成果文档', pulseUnavailable ? '—' : new Set(data.pulls.map(row=>row.url)).size, 'document', false, {unit:'份'})}
+    ${metric(`${periods[days]} Token 用量`, pulseUnavailable ? '—' : count((data.models || []).reduce((sum, row) => sum + usageTotal(row), 0n)), 'token', true)}
   </div>
     ${teamCards()}
     <div class="section-heading"><div class="section-title"><h2>项目空间</h2><span class="section-count">${allProjects().length}</span></div></div>${projectCards(allProjects())}
@@ -335,12 +350,12 @@ function projectModules(key) {
 }
 function projectPage(key) {
   const project=allProjects().find(row=>row.full_name===key);
-  if (!project) return `${heading('项目不存在',false)}${empty('返回总览选择项目')}`;
-  const sessions=data.sessions.filter(row=>projectKey(row)===key), docs=data.pulls.filter(row=>row.full_name===key);
+  if (!project) return `${heading(projectName(key),false)}${empty('Pulse 暂无该项目的采集数据')}<div id="project-milestones">${milestonePanel(key)}</div>`;
+  const sessions=data.sessions.filter(row=>projectKey(row)===key), docs=data.pulls.filter(row=>projectKey(row)===key);
   const agents=runningAgents(key);
   const agentSection=`<div id="project-agents">${section(`${icon('bot')}AI 工作现场`,agentCards(agents))}</div>`;
-  return `${heading(projectName(key))}<div class="live-project-info"><span>${project.local ? '本地工作区' : '已关联 GitHub 仓库'}</span>${status[project.status] ? `<span class="status-badge tone-${tone[project.status]||'muted'}">${status[project.status]}</span>` : ''}<span>${esc(key)}</span><span>负责人：${esc(project.owner_name || data.memberships?.find(r=>projectKey(r)===key && r.owner_name)?.owner_name || data.project_reports?.find(r=>r.project_key.toLowerCase()===key.toLowerCase())?.owner_name || '待登记')}</span></div>
-    <div class="metric-grid live-project-metrics">${metric('近期会话',sessions.length,'activity')}${metric('产出文档',docs.length,'document')}${metric('草稿',docs.filter(row=>row.is_draft).length,'document')}</div>
+  return `${heading(project.ember?.name || projectName(key))}<div class="live-project-info"><span>${project.ember ? '项目进展来自 Ember' : project.local ? '本地工作区' : '已关联 GitHub 仓库'}</span>${status[project.status] ? `<span class="status-badge tone-${tone[project.status]||'muted'}">${status[project.status]}</span>` : ''}<span>${esc(key)}</span><span>负责人：${esc(project.owner_name || data.memberships?.find(r=>projectKey(r)===key && r.owner_name)?.owner_name || data.project_reports?.find(r=>r.project_key.toLowerCase()===key.toLowerCase())?.owner_name || '待登记')}</span></div>
+    <div class="metric-grid live-project-metrics">${metric('近期会话',pulseUnavailable ? '—' : sessions.length,'activity')}${metric('产出文档',pulseUnavailable ? '—' : docs.length,'document')}${metric('草稿',pulseUnavailable ? '—' : docs.filter(row=>row.is_draft).length,'document')}</div>
     <nav class="live-page-tabs" aria-label="项目内容"><button data-scroll-to="project-modules">功能模块</button><button data-scroll-to="project-milestones">项目里程碑</button><button data-scroll-to="project-agents">AI 工作现场</button><button data-scroll-to="project-sessions">近期会话</button><button data-scroll-to="project-docs">产出文档</button><button data-scroll-to="project-members">项目成员</button></nav>
     <div id="project-modules">${projectModules(key)}</div>
     <div id="project-milestones">${milestonePanel(key)}</div>
@@ -364,7 +379,7 @@ function memberPage(key) {
   const sessions=data.sessions.filter(item=>memberKey(item)===memberKey(person));
   const projects=memberProjects(memberKey(person));
   const active=runningAgents().filter(item=>memberKey(item)===memberKey(person));
-  return `${heading(person.display_name)}<div class="metric-grid live-team-metrics">${metric('参与项目',projects.length,'folder')}${metric('近期会话',sessions.length,'activity')}${metric('运行中的 Agent',active.length,'bot')}${metric('最近活跃工具',person.tool_id||'—','code')}</div>${section(`${icon('folder')}参与项目`,projects.length?projectCards(allProjects().filter(item=>projects.includes(item.full_name))):empty('项目待关联'))}${section(`${icon('activity')}近期会话与总结`,sessionGroups(sessions))}${section(`${icon('bot')}AI 工作现场`,agentCards(active))}`;
+  return `${heading(person.display_name)}<div class="metric-grid live-team-metrics">${metric('参与项目',projects.length,'folder')}${metric('近期会话',pulseUnavailable ? '—' : sessions.length,'activity')}${metric('运行中的 Agent',active.length,'bot')}${metric('最近活跃工具',person.tool_id||'—','code')}</div>${section(`${icon('folder')}参与项目`,projects.length?projectCards(allProjects().filter(item=>projects.includes(item.full_name))):empty('项目待关联'))}${section(`${icon('activity')}近期会话与总结`,sessionGroups(sessions))}${section(`${icon('bot')}AI 工作现场`,agentCards(active))}`;
 }
 function sessionsPage() { return `${heading('近期会话与总结')}${section(`${icon('activity')}会话`,sessionGroups(data.sessions))}`; }
 function outputsPage() { return `${heading('产出文档')}${section(`${icon('document')}文档清单`,pulls(data.pulls))}`; }
@@ -373,17 +388,55 @@ function render() {
   const current=route(), names={overview:'总览',team:'团队成员',member:current.name ? selectedMember(current.name)?.display_name ?? '成员详情' : '成员详情',sessions:'近期会话与总结',outputs:'产出文档',project:projectName(current.key)};
   const content=current.page==='project'?projectPage(current.key):current.page==='member'?memberPage(current.name):current.page==='team'?teamPage():current.page==='sessions'?sessionsPage():current.page==='outputs'?outputsPage():overview();
   document.title=`${names[current.page]} · Project Pulse`;
-  app.innerHTML=`${side()}<div class="live-nav-backdrop" id="backdrop"></div><div class="content-shell">${topbar(names[current.page])}<main id="main-content" tabindex="-1">${error?`<p class="live-error" role="status">${esc(error)}</p>`:''}${content}<footer class="live-footer">Project Pulse · 数据按新加坡时间统计</footer></main></div>`;
+  app.innerHTML=`${side()}<div class="live-nav-backdrop" id="backdrop"></div><div class="content-shell">${topbar(names[current.page])}<main id="main-content" tabindex="-1">${error?`<p class="live-error" role="status">${esc(error)}</p>`:''}${emberNotice ? (emberNotice === 'login' ? '<p class="live-error"><a href="/session/new" target="_blank" rel="noopener">登录 Ember</a>后刷新，查看当前账号可见的项目进展。</p>' : '<p class="live-error" role="status">暂时无法读取 Ember 项目，Pulse 统计仍可查看。</p>') : ''}${content}<footer class="live-footer">Project Pulse · 数据按新加坡时间统计</footer></main></div>`;
+}
+async function readJson(url) {
+  const response = await fetch(url, {cache:'no-store',signal:AbortSignal.timeout(8000)});
+  if (!response.ok) throw Object.assign(new Error('数据读取失败'), {status:response.status});
+  return response.json();
 }
 async function load() {
   if (loading) return;
   loading=true;error='';if (!data) render();
   try {
-    const response=await fetch(`/api/v1/dashboard?days=${days}`);
-    if (!response.ok) throw new Error('数据读取失败，请重试');
-    data=await response.json();
+    const [pulse, ember] = await Promise.allSettled([
+      readJson(`./api/v1/dashboard?days=${days}`),
+      securePulseView ? readJson('/api/pulse/projects?source=ember') : Promise.resolve({projects:[]}),
+    ]);
+    pulseUnavailable = pulse.status === 'rejected';
+    emberNotice = ember.status === 'rejected' ? (ember.reason.status === 401 ? 'login' : 'error') : '';
+    if (pulseUnavailable && (!securePulseView || ember.status === 'rejected')) {
+      data = null;
+      throw new Error('暂时无法读取工作台，请重试');
+    }
+    if (pulseUnavailable) error = 'Pulse 统计暂不可用，仍可查看 Ember 项目和进展。';
+    const metrics = pulse.status === 'fulfilled' ? pulse.value : {
+      people:[], projects:[], models:[], sessions:[], agents:[], pulls:[], running:0,
+    };
+    data = {...metrics, projects:mergeEmberProjects(metrics.projects, ember.status === 'fulfilled' ? ember.value.projects : [])};
   } catch (cause) {error=cause.message||'数据读取失败，请重试';}
-  finally {loading=false;render();}
+  finally {loading=false;render();void loadEmberSnapshot();}
+}
+async function loadEmberSnapshot() {
+  emberRequest?.abort();
+  if (!securePulseView || !data) return;
+  const current=route();
+  if (current.page!=='project') return;
+  const key=current.key;
+  const controller=new AbortController();
+  emberRequest=controller;
+  const update=()=>{ const panel=document.getElementById('project-milestones'); if (panel) panel.innerHTML=milestonePanel(key); };
+  try {
+    const response=await fetch(`/api/pulse/ember-snapshot?repository=${encodeURIComponent(key)}`,
+      {cache:'no-store',signal:AbortSignal.any([controller.signal,AbortSignal.timeout(8000)])});
+    const snapshot=response.ok ? await response.json() : null;
+    if (controller.signal.aborted) return;
+    emberRead={key,status:response.status,snapshot};
+  } catch {
+    if (controller.signal.aborted) return;
+    emberRead={key,status:502,snapshot:null};
+  }
+  update();
 }
 document.addEventListener('click',event=>{
   const period=event.target.closest('[data-days]');
@@ -394,5 +447,9 @@ document.addEventListener('click',event=>{
   if (event.target.closest('#menu')) {document.body.classList.add('live-nav-open');return;}
   if (event.target.closest('#backdrop, .sidebar a')) document.body.classList.remove('live-nav-open');
 });
-window.addEventListener('hashchange',()=>{render();window.scrollTo(0,0);});
+window.addEventListener('hashchange',()=>{emberRead=undefined;render();void loadEmberSnapshot();window.scrollTo(0,0);});
+if (securePulseView) {
+  setInterval(()=>{if (!document.hidden) void loadEmberSnapshot();},60_000);
+  document.addEventListener('visibilitychange',()=>{if (!document.hidden) void loadEmberSnapshot();});
+}
 void load();

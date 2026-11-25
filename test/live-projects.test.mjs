@@ -1,8 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {researchProjectCount,memberProjectKeys,renderProjectDocuments,isRunningAgent,splitDeferredPanels,adaptiveColumnsClass} from '../src/live-projects.js';
+import {researchProjectCount,memberProjectKeys,renderProjectDocuments,isRunningAgent,splitDeferredPanels,adaptiveColumnsClass,mergeEmberProjects} from '../src/live-projects.js';
 import {dashboardCutoff} from '../backend.mjs';
 import {escapeHtml} from '../src/domain.js';
+
+test('合并 Ember 项目目录时按完整仓库名去重并保留 Pulse 统计',()=>{
+  const ember = [{repository:'team/game',name:'赛事',status:'blocked'},{repository:'team/observer',name:'观测'}];
+  const pulse = [{full_name:'Team/Game',status:'on_track',sessions:3},{full_name:'other/game',sessions:2}];
+  assert.deepEqual(mergeEmberProjects(pulse, ember).map(project=>[project.full_name,project.status,project.sessions]),[
+    ['Team/Game','blocked',3],['other/game',undefined,2],['team/observer',undefined,undefined],
+  ]);
+  assert.equal(mergeEmberProjects([],ember).length,2);
+});
 
 test('在研包括阻塞，不依赖Agent或最近活动，不包括完成、暂停及未知',()=>{
   assert.equal(researchProjectCount(['on_track','blocked','completed','paused','unknown'].map(status=>({status,last_activity_at:'2000-01-01',agents:[]}))),2);

@@ -8,7 +8,10 @@ import { networkInterfaces } from 'node:os';
 // 内网预览只暴露页面资源；项目配置、测试和其他磁盘文件不作为静态资源提供。
 const root = fileURLToPath(new URL('.', import.meta.url));
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
-export function createPreviewServer(api = null, {reportOnly = false} = {}) {
+export function createPreviewServer(api = null, {reportOnly = false, emberDashboardUrl = process.env.PULSE_EMBER_DASHBOARD_URL} = {}) {
+  const emberUrl = emberDashboardUrl && URL.canParse(emberDashboardUrl) ? new URL(emberDashboardUrl) : null;
+  const emberLink = emberUrl?.protocol === 'https:' && !emberUrl.username && !emberUrl.password &&
+    emberUrl.pathname === '/project-pulse/' && !emberUrl.search && !emberUrl.hash ? emberUrl.origin + emberUrl.pathname : '';
   const server = http.createServer(async (request, response) => {
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Cache-Control', 'no-store');
@@ -43,7 +46,10 @@ export function createPreviewServer(api = null, {reportOnly = false} = {}) {
     }
     try {
       if (!(await stat(filename)).isFile()) throw new Error('Not a file');
-      const body = await readFile(filename);
+      let body = await readFile(filename);
+      if (emberLink && pathname === '/assets/live-workspace.html') {
+        body = Buffer.from(body.toString('utf8').replace('name="ember-pulse-url" content=""', `name="ember-pulse-url" content="${emberLink}"`));
+      }
       response.writeHead(200, { 'Content-Type': mime[path.extname(filename)], 'Content-Length': body.length });
       response.end(request.method === 'HEAD' ? undefined : body);
     } catch { response.writeHead(404).end('Not found'); }

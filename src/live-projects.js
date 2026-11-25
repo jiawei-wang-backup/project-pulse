@@ -40,3 +40,13 @@ export function renderProjectDocuments(items,{esc,icon,date,projectName,safeGith
       return `<div class="live-doc-row"><span class="live-doc-icon">${icon('document')}</span><div><strong>${link?`<a href="${esc(link)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`:esc(label)}</strong><span>${esc(state)}</span></div>${row.is_draft?'<span class="status-badge tone-amber">草稿</span>':''}<time>${date(row.updated_at)}</time></div>`;
     }).join('')}</div></details>`).join('');
 }
+export function mergeEmberProjects(pulse, ember) {
+  const result = new Map(pulse.map(project => [project.full_name.toLowerCase(), project]));
+  for (const item of ember) {
+    const key = item.repository.toLowerCase();
+    const project = result.get(key);
+    result.set(key, {...project, full_name:project?.full_name ?? item.repository,
+      status:item.status ?? project?.status, ember:item});
+  }
+  return [...result.values()];
+}
